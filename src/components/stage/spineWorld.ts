@@ -1,20 +1,23 @@
-'use client';
-
-import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { getDeviceTier, TIER_MAX_DPR } from '@/lib/deviceTier';
 
-interface SpinalCordBackgroundProps {
-  progress?: number;
-  progressRef?: React.RefObject<number> | { current: number };
-  enableParticles?: boolean;
-}
+/**
+ * The spinal-cord scene behind the startup-journey carousel, as a "world" for
+ * the shared stage canvas: it builds its scene and camera but owns no renderer,
+ * render loop or resize handling — the stage calls update() only while the
+ * carousel is visible and renders the scene itself.
+ *
+ * (Previously SpinalCordBackground, a component with its own WebGL context.)
+ */
+export type SpineWorld = {
+  scene: THREE.Scene;
+  camera: THREE.PerspectiveCamera;
+  update: (time: number) => void;
+  setSize: (width: number, height: number) => void;
+  dispose: () => void;
+};
 
 /* ─── Cluster Particle System Shaders (Dense Sticky Colonies) ─── */
 const clusterParticleVertexShader = /* glsl */ `
@@ -129,23 +132,20 @@ void main() {
 }
 `;
 
-export default function SpinalCordBackground({
-  progress = 0,
+export function createSpineWorld({
   progressRef,
-  enableParticles = true, // Enabled particles around the spine
-}: SpinalCordBackgroundProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const fallbackProgressRef = useRef(progress);
-
-  useEffect(() => {
-    fallbackProgressRef.current = progress;
-  }, [progress]);
-
-  const activeProgressRef = progressRef || fallbackProgressRef;
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  width,
+  height,
+  enableParticles = true,
+  onReady,
+}: {
+  progressRef: { current: number };
+  /** Called once the spine model has loaded (or failed to). */
+  onReady?: () => void;
+  width: number;
+  height: number;
+  enableParticles?: boolean;
+}): SpineWorld {
 
     /* ─── Scene / Camera / Renderer ─── */
     const scene = new THREE.Scene();
@@ -153,47 +153,17 @@ export default function SpinalCordBackground({
 
     const camera = new THREE.PerspectiveCamera(
       45,
-      canvas.clientWidth / canvas.clientHeight,
+      width / height,
       0.1,
       100,
     );
     camera.position.set(0, 0, 26.0); // Pulled back a bit further for a slightly wider, less cropped view of the spine
 
-    // Scale the full-screen cost to the device: pixel ratio (cost grows with
-    // its square), MSAA, particle count and the bloom pass.
+    // Particle count and point size scale with the device tier. (The previous
+    // bloom pass was nearly invisible at strength 0.07 and is gone: the shared
+    // canvas composites this scene without post-processing.)
     const tier = getDeviceTier();
     const pixelRatio = Math.min(window.devicePixelRatio, TIER_MAX_DPR[tier]);
-    const useBloom = tier === 'high';
-
-    const renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: tier === 'high',
-      alpha: true,
-      powerPreference: 'high-performance',
-    });
-    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
-    renderer.setPixelRatio(pixelRatio);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
-
-    /* ─── Post-Processing: Bloom (Refined soft specular halo) ─── */
-    // Only allocated on high-tier devices; elsewhere the scene renders directly.
-    let composer: EffectComposer | null = null;
-    let bloomPass: UnrealBloomPass | null = null;
-    let outputPass: OutputPass | null = null;
-    if (useBloom) {
-      composer = new EffectComposer(renderer);
-      composer.addPass(new RenderPass(scene, camera));
-      bloomPass = new UnrealBloomPass(
-        new THREE.Vector2(canvas.clientWidth, canvas.clientHeight),
-        0.07, // strength — subtle, elegant soft halo (reduced so fewer specular hotspots bloom into visible glow bubbles)
-        0.5,  // radius
-        0.93, // threshold — only the very brightest highlights bloom now
-      );
-      composer.addPass(bloomPass);
-      outputPass = new OutputPass();
-      composer.addPass(outputPass);
-    }
 
     /* ─── Curated Lighting Rig: Multi-Shade Purple & Lavender (Soft Balanced Intensity) ─── */
     // Subtle nocturnal amethyst ambient foundation
@@ -466,10 +436,12 @@ export default function SpinalCordBackground({
 
         loadedSpineModel = model;
         spineMasterGroup.add(model);
+        onReady?.();
       },
       undefined,
       (err) => {
         console.warn('Custom spine.glb load error:', err);
+        onReady?.();
       }
     );
 
@@ -674,10 +646,10 @@ export default function SpinalCordBackground({
     const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 
     const onPointerMove = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
+      // The stage fills the viewport, so viewport coordinates map directly.
       const ndc = new THREE.Vector2(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        -((e.clientY - rect.top) / rect.height) * 2 + 1
+        (e.clientX / window.innerWidth) * 2 - 1,
+        -(e.clientY / window.innerHeight) * 2 + 1
       );
       raycaster.setFromCamera(ndc, camera);
       raycaster.ray.intersectPlane(plane, pointerWorld);
@@ -689,20 +661,10 @@ export default function SpinalCordBackground({
     let pulseEnergy = 0.0;
     let pulsePos = 0.0;
 
-    /* ─── Resize Handler ─── */
-    const canvasEl = canvas;
-    function onResize() {
-      const w = canvasEl.clientWidth;
-      const h = canvasEl.clientHeight;
+    function setSize(w: number, h: number) {
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-      composer?.setSize(w, h);
-      if (clusterMaterial) {
-        clusterMaterial.uniforms.uPixelRatio.value = pixelRatio;
-      }
     }
-    window.addEventListener('resize', onResize);
 
     /* ─── Scroll Velocity Tracker ─── */
     let lastScrollY = window.scrollY;
@@ -716,26 +678,8 @@ export default function SpinalCordBackground({
     };
     window.addEventListener('scroll', onScrollVel, { passive: true });
 
-    /* Pause the whole render loop once the carousel scrolls off-screen —
-       this scene otherwise keeps rendering 50k particles + bloom forever. */
-    let isInViewport = true;
-    const viewportObserver = new IntersectionObserver(
-      ([entry]) => {
-        isInViewport = entry.isIntersecting;
-      },
-      { rootMargin: '50% 0px 50% 0px' },
-    );
-    viewportObserver.observe(canvas);
-
-    /* ─── Animation Loop ─── */
-    const clock = new THREE.Clock();
-    let rafId = 0;
-
-    function animate() {
-      rafId = requestAnimationFrame(animate);
-      if (document.hidden || !isInViewport) return; // skip rendering while backgrounded or off-screen
-
-      const time = clock.getElapsedTime();
+    /* ─── Per-frame update (called by the shared canvas only while visible) ─── */
+    function update(time: number) {
 
       // Velocity decay
       currentVelocity += (targetVelocity - currentVelocity) * 0.12;
@@ -790,7 +734,7 @@ export default function SpinalCordBackground({
       );
 
       /* Scroll-synced Spine & Sticky Cluster Kinematics (Multi-Layer Parallax Gearing) */
-      const currentProgress = activeProgressRef.current ?? 0;
+      const currentProgress = progressRef.current ?? 0;
 
       // Differentiated parallax rotation: spine rotates with a distinct, stately velocity relative to cards
       const targetSpineRotY = currentProgress * 2.2 + time * 0.08;
@@ -806,23 +750,12 @@ export default function SpinalCordBackground({
       camera.position.y += (targetY + Math.cos(time * 0.1) * 0.25 - camera.position.y) * 0.16;
       camera.lookAt(0, camera.position.y, 0);
 
-      if (composer) composer.render();
-      else renderer.render(scene, camera);
     }
 
-    animate();
-
-    return () => {
+    function dispose() {
       isUnmounted = true;
-      cancelAnimationFrame(rafId);
-      viewportObserver.disconnect();
-      window.removeEventListener('resize', onResize);
       window.removeEventListener('scroll', onScrollVel);
       window.removeEventListener('mousemove', onPointerMove);
-      bloomPass?.dispose();
-      outputPass?.dispose();
-      composer?.dispose();
-      renderer.dispose();
       vertebraMaterial.dispose();
       if (clusterGeometry) clusterGeometry.dispose();
       if (clusterMaterial) clusterMaterial.dispose();
@@ -837,14 +770,7 @@ export default function SpinalCordBackground({
         });
       }
       dracoLoader.dispose();
-    };
-  }, []);
+    }
 
-  return (
-    <canvas
-      ref={canvasRef}
-      className="absolute inset-0 w-full h-full"
-      style={{ display: 'block' }}
-    />
-  );
+    return { scene, camera, update, setSize, dispose };
 }

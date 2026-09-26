@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
+import { useLayer } from "@/components/stage/layerContext";
 
 export const EMBLEM_GLOW_VIDEO_PATH = "/videos/emblem-glow-nebula.mp4";
 
@@ -121,6 +122,7 @@ export function useEmblemGlowTexture(videoSrc: string = EMBLEM_GLOW_VIDEO_PATH) 
   // hook's contract — the shared instance itself lives in a ref for useFrame.
   const [texture, setTexture] = useState<THREE.VideoTexture | null>(null);
   const instanceRef = useRef<SharedGlow | null>(null);
+  const { activeRef } = useLayer();
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -168,7 +170,8 @@ export function useEmblemGlowTexture(videoSrc: string = EMBLEM_GLOW_VIDEO_PATH) 
 
   useFrame((state) => {
     const s = instanceRef.current;
-    if (!s) return;
+    // Off-screen layers don't count as drawing the glow (so the video can pause).
+    if (!s || !activeRef.current) return;
 
     s.lastFrameAt = performance.now();
     if (s.video.paused && !s.resuming && !document.hidden) {

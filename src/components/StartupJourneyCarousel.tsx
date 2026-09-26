@@ -1,11 +1,9 @@
 'use client';
 
 import React, { useRef, useEffect, useState } from 'react';
-import dynamic from 'next/dynamic';
 import { useHasBeenNearViewport } from '@/hooks/useInViewport';
 import { useDeviceTier } from '@/lib/deviceTier';
-
-const SpinalCordBackground = dynamic(() => import('./SpinalCordBackground'), { ssr: false });
+import { stageSlots, useStageSlot } from '@/components/stage/stageSlots';
 
 
 
@@ -74,6 +72,8 @@ const journeyCards = [
 ];
 
 const TOTAL_CARDS = journeyCards.length;
+// Smoothed float index read by the spine scene (drawn by the shared stage canvas).
+const progressRef = stageSlots.spine.progress;
 const ANGLE_STEP = 60;  // 360° / 6 cards = 60° rotation per step along helix
 const RADIUS = 520; // px — circular radius around spine (expanded for bigger reference cards)
 const STEP_Y = 200; // px — vertical step height along spine
@@ -84,12 +84,12 @@ export default function StartupJourneyCarousel() {
   const carouselRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
   const rawRef = useRef(0); // target float index
-  const progressRef = useRef(0); // smoothed float index passed to WebGL
   const targetCurtainRef = useRef(0);
   const curtainSmoothRef = useRef(0);
   const [activeIndex, setActiveIndex] = useState(0);
-  // Defer the spine WebGL scene (and its model download) and the card videos
-  // until the carousel approaches the viewport.
+  // The spine scene is drawn into this stage by the shared stage canvas.
+  useStageSlot('spine', stageRef, sectionRef);
+  // Defer the card videos until the carousel approaches the viewport.
   const isNear = useHasBeenNearViewport(sectionRef);
   const tier = useDeviceTier();
 
@@ -154,6 +154,8 @@ export default function StartupJourneyCarousel() {
       const targetCurtain = targetCurtainRef.current;
       curtainSmoothRef.current += (targetCurtain - curtainSmoothRef.current) * 0.15;
       const p = Math.max(0, Math.min(1, curtainSmoothRef.current));
+      // The shared canvas clips the spine scene with the same curtain.
+      stageSlots.spine.curtain.current = p;
 
       // 3. Update dynamic straight horizontal clip path on the sticky stage
       if (stageRef.current) {
@@ -256,7 +258,7 @@ export default function StartupJourneyCarousel() {
       {/* ── Sticky full-screen 100vh stage (Masked with straight horizontal curtain reveal) ── */}
       <div
         ref={stageRef}
-        className="sticky top-0 w-full h-screen flex flex-col overflow-hidden bg-black pointer-events-auto"
+        className="sticky top-0 w-full h-screen flex flex-col overflow-hidden pointer-events-auto"
         style={{
           clipPath: 'inset(100% 0 0 0)',
           WebkitClipPath: 'inset(100% 0 0 0)',
@@ -264,9 +266,8 @@ export default function StartupJourneyCarousel() {
         }}
       >
 
-        {/* ── WebGL Spine + vignette ── */}
+        {/* ── Vignette over the spine scene (drawn behind by the shared stage canvas) ── */}
         <div className="absolute inset-0 z-0 pointer-events-none">
-          {isNear && <SpinalCordBackground progressRef={progressRef} />}
           {/* Subtle dark ambient flare matching theme */}
           <div
             className="absolute inset-0 pointer-events-none opacity-30"
