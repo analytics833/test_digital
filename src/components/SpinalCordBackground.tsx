@@ -398,7 +398,7 @@ export default function SpinalCordBackground({
     /* ─── Load Custom Spine GLB Model (/models/spinenw-opt.glb) ─── */
     const gltfLoader = new GLTFLoader();
     const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+    dracoLoader.setDecoderPath('/draco/');
     gltfLoader.setDRACOLoader(dracoLoader);
 
     let isUnmounted = false;

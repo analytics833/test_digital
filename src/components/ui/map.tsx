@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import 'leaflet/dist/leaflet.css';
 
 // Leaflet context to share instance among children
 const LeafletContext = createContext<{ map: any; L: any } | null>(null);
@@ -26,15 +27,6 @@ export function Map({
     const initMap = async () => {
       // Dynamic import to prevent SSR/Next.js pre-render errors
       L = await import('leaflet');
-
-      // Inject Leaflet CSS dynamically if not present
-      if (!document.getElementById('leaflet-css')) {
-        const link = document.createElement('link');
-        link.id = 'leaflet-css';
-        link.rel = 'stylesheet';
-        link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-        document.head.appendChild(link);
-      }
 
       if (!active || !containerRef.current) return;
 
