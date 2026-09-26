@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -13,7 +13,7 @@ interface NavbarProps {
 
 export default function Navbar({ onOpenAction }: NavbarProps) {
   const [isScrolled, setIsScrolled] = useState(false);
-  const [lastScrollY, setLastScrollY] = useState(0);
+  const lastScrollYRef = useRef(0);
   const [isVisible, setIsVisible] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
@@ -31,18 +31,16 @@ export default function Navbar({ onOpenAction }: NavbarProps) {
       // Check scroll depth
       setIsScrolled(currentScrollY > scrollThreshold);
 
-      // Hide navbar when scrolling down past 100px, show when scrolling up
-      if (currentScrollY > lastScrollY && currentScrollY > 100) {
-        setIsVisible(false);
-      } else {
-        setIsVisible(true);
-      }
-      setLastScrollY(currentScrollY);
+      // Hide navbar when scrolling down past 100px, show when scrolling up.
+      // The last position lives in a ref: keeping it in state re-rendered the
+      // navbar and re-subscribed this listener on every scroll event.
+      setIsVisible(!(currentScrollY > lastScrollYRef.current && currentScrollY > 100));
+      lastScrollYRef.current = currentScrollY;
     };
 
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [lastScrollY]);
+  }, []);
 
   // Glassmorphism inline styles for exact cross-browser support
   const glassStyle = {

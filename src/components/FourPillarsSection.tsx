@@ -75,7 +75,7 @@ export default function FourPillarsSection() {
               href="/programs"
               className="group block relative h-[450px] sm:h-[463px] p-7 flex flex-col justify-between overflow-hidden shadow-2xl bg-cover bg-center rounded-[24px] h-full w-full"
               style={{
-                backgroundImage: `url('/images/firstimg.png')`,
+                backgroundImage: `url('/images/firstimg.webp')`,
               }}
             >
               <div className="flex items-center justify-end gap-2 text-white font-['Inter',sans-serif] text-sm font-normal z-10">
@@ -146,7 +146,7 @@ export default function FourPillarsSection() {
               href="/partners"
               className="group block relative h-[450px] sm:h-[463px] p-7 flex flex-col justify-between overflow-hidden shadow-2xl bg-cover bg-center rounded-[24px] h-full w-full"
               style={{
-                backgroundImage: `url('/images/secondimg.png')`,
+                backgroundImage: `url('/images/secondimg.webp')`,
               }}
             >
               <div className="flex items-center justify-end gap-2 text-white font-['Inter',sans-serif] text-sm font-normal z-10">

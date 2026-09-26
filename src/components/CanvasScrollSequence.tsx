@@ -1,8 +1,16 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import * as THREE from 'three';
 import { ArrowRight, Calendar, MapPin, Building2, Sparkles } from 'lucide-react';
+import { getDeviceTier } from '@/lib/deviceTier';
+
+// Low-tier devices use a lighter frame set: every 2nd frame (300 instead of
+// 600) at 640x360 instead of 1280x720 — ~2.7MB instead of ~15MB — and keep only
+// a window of decoded frames around the current position in memory.
+const LOW_TIER_FRAME_STEP = 2;
+const LOW_TIER_RETAINED_FRAMES = 90;
+// Frames that count toward the initial loading bar.
+const LOADING_BAR_FRAMES = 60;
 
 interface CanvasScrollSequenceProps {
   frameCount?: number;
@@ -13,12 +21,14 @@ interface CanvasScrollSequenceProps {
 }
 
 export default function CanvasScrollSequence({
-  frameCount = 600,
+  frameCount: fullFrameCount = 600,
   containerHeight = 'h-[500vh]',
   onProgressUpdate,
   onOpenAction,
   children,
 }: CanvasScrollSequenceProps) {
+  const [isLowTier] = useState(() => getDeviceTier() === 'low');
+  const frameCount = isLowTier ? Math.ceil(fullFrameCount / LOW_TIER_FRAME_STEP) : fullFrameCount;
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imagesRef = useRef<HTMLImageElement[]>([]);
@@ -30,6 +40,7 @@ export default function CanvasScrollSequence({
   const priorityFrameRef = useRef(0);
   const currentFrameRef = useRef<number>(0);
   const animationFrameIdRef = useRef<number | null>(null);
+  const wakeWorkersRef = useRef<(() => void) | null>(null);
   const idleAnimIdRef = useRef<number | null>(null);
 
   const [imagesLoadedCount, setImagesLoadedCount] = useState(0);
@@ -38,14 +49,8 @@ export default function CanvasScrollSequence({
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
   const [shouldLoad, setShouldLoad] = useState(false);
 
-  // WebGL Active Theory Liquid Fluid Physics State Refs
-  const webglStateRef = useRef<{
-    renderer: THREE.WebGLRenderer;
-    scene: THREE.Scene;
-    camera: THREE.OrthographicCamera;
-    material: THREE.ShaderMaterial;
-    texture: THREE.Texture;
-  } | null>(null);
+  // 2D canvas context the frames are drawn into (cover-fit, like object-fit: cover)
+  const ctx2dRef = useRef<CanvasRenderingContext2D | null>(null);
 
   // Helper to get frame path — WebP (q80) instead of the original JPGs: ~58%
   // smaller (33MB -> 13.4MB total across all 600 frames), so the sequence
@@ -54,8 +59,8 @@ export default function CanvasScrollSequence({
   // in public/frames/*.jpg as a backup, unreferenced by the app.
   const getFramePath = useCallback((index: number) => {
     const frameNum = String(index + 1).padStart(3, '0');
-    return `/frames/ezgif-frame-${frameNum}.webp`;
-  }, []);
+    return isLowTier ? `/frames-sm/frame-${frameNum}.webp` : `/frames/ezgif-frame-${frameNum}.webp`;
+  }, [isLowTier]);
 
   // Preload Images with High-Speed Concurrent Pool & Priority Fetching
   const loadSingleImage = useCallback((index: number, onDone?: () => void) => {
@@ -79,13 +84,15 @@ export default function CanvasScrollSequence({
     const markReady = () => {
       loadingSetRef.current.delete(index);
       imagesRef.current[index] = img;
-      setImagesLoadedCount((prev) => prev + 1);
+      // Only the first frames feed the loading bar; counting all of them would
+      // re-render this whole section once per frame (600 times).
+      if (index < LOADING_BAR_FRAMES) setImagesLoadedCount((prev) => prev + 1);
       if (index < 5) setIsInitialReady(true);
       if (onDone) onDone();
     };
     const markFailed = () => {
       loadingSetRef.current.delete(index);
-      setImagesLoadedCount((prev) => prev + 1);
+      if (index < LOADING_BAR_FRAMES) setImagesLoadedCount((prev) => prev + 1);
       if (onDone) onDone();
     };
 
@@ -150,11 +157,24 @@ export default function CanvasScrollSequence({
     // or deep scroll re-centers the whole queue immediately, so the frames
     // about to be needed are always what's loading next — not whatever was
     // next in line from a linear scan that may be hundreds of frames behind.
-    const CONCURRENCY = 16;
+    const CONCURRENCY = isLowTier ? 4 : 8;
+    // Low tier only ever loads (and keeps) a window of frames around the
+    // current position; frames outside it are released in evictFarFrames().
+    const searchRadius = isLowTier ? LOW_TIER_RETAINED_FRAMES / 2 : frameCount;
+
+    const evictFarFrames = () => {
+      if (!isLowTier) return;
+      const center = priorityFrameRef.current;
+      imagesRef.current.forEach((img, i) => {
+        if (img && Math.abs(i - center) > searchRadius) {
+          delete imagesRef.current[i];
+        }
+      });
+    };
 
     const findNextPriorityIndex = (): number => {
       const center = priorityFrameRef.current;
-      for (let offset = 0; offset < frameCount; offset++) {
+      for (let offset = 0; offset < searchRadius; offset++) {
         const forward = center + offset;
         if (forward < frameCount && !imagesRef.current[forward] && !loadingSetRef.current.has(forward)) {
           return forward;
@@ -167,10 +187,17 @@ export default function CanvasScrollSequence({
       return -1;
     };
 
+    // Workers that found nothing left to load park here; the scroll handler
+    // wakes them when the user moves into an unloaded region.
+    let idleWorkers = 0;
     const worker = () => {
       if (!isMounted) return;
+      evictFarFrames();
       const nextIdx = findNextPriorityIndex();
-      if (nextIdx === -1) return; // everything loaded (or already in flight)
+      if (nextIdx === -1) {
+        idleWorkers++;
+        return;
+      }
       loadSingleImage(nextIdx, () => {
         if (isMounted) worker();
       });
@@ -180,136 +207,45 @@ export default function CanvasScrollSequence({
       worker();
     }
 
+    wakeWorkersRef.current = () => {
+      const n = idleWorkers;
+      idleWorkers = 0;
+      for (let c = 0; c < n; c++) worker();
+    };
+
     return () => {
       isMounted = false;
+      wakeWorkersRef.current = null;
     };
-  }, [frameCount, loadSingleImage, shouldLoad]);
+  }, [frameCount, isLowTier, loadSingleImage, shouldLoad]);
 
-  // WebGL Active Theory Navier-Stokes Fluid Distortion Physics Setup
+  // Canvas setup. A plain 2D canvas is enough to blit one frame at a time and
+  // avoids holding yet another WebGL context (the page already runs several).
+  // The frames are 1280x720, so the backing store never needs to exceed the
+  // CSS size at 1x — drawing at devicePixelRatio 2-3 would only upscale.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    let renderer: THREE.WebGLRenderer;
-    try {
-      renderer = new THREE.WebGLRenderer({
-        canvas,
-        antialias: true,
-        alpha: true,
-        powerPreference: 'high-performance',
-      });
-    } catch (e) {
-      console.warn('WebGL not supported for liquid video distortion', e);
-      return;
-    }
-
-    const isMobileGPU = typeof window !== 'undefined' && (window.innerWidth < 768 || /Mobi|Android/i.test(navigator.userAgent));
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isMobileGPU ? 1.25 : 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-
-    // 1. Fluid Velocity FBO Targets (Ping-Pong grid optimized for device)
-    const fboSize = isMobileGPU ? 128 : 256;
-    const quadGeo = new THREE.PlaneGeometry(2, 2);
-    const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-
-    // Direct High-Definition Video Frame Display Shader (No cursor distortion)
-    const texture = new THREE.Texture();
-    texture.minFilter = THREE.LinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.generateMipmaps = false;
-
-    const displayMat = new THREE.ShaderMaterial({
-      vertexShader: `
-        varying vec2 vUv;
-        void main() { vUv = uv; gl_Position = vec4(position, 1.0); }
-      `,
-      fragmentShader: `
-        precision highp float;
-        uniform sampler2D uTexture;
-        uniform vec2 uResolution;
-        uniform vec2 uImageResolution;
-        varying vec2 vUv;
-
-        vec2 getCoverUv(vec2 uv, vec2 screenRes, vec2 texRes) {
-          vec2 s = screenRes;
-          vec2 i = texRes;
-          float rs = s.x / s.y;
-          float ri = i.x / i.y;
-          vec2 newUv = rs < ri ? vec2(uv.x * s.y / s.x * ri, uv.y) : vec2(uv.x, uv.y * s.x / s.y / ri);
-          newUv += (rs < ri ? vec2((1.0 - s.y / s.x * ri) * 0.5, 0.0) : vec2(0.0, (1.0 - s.x / s.y / ri) * 0.5));
-          return newUv;
-        }
-
-        void main() {
-          vec2 uv = getCoverUv(vUv, uResolution, uImageResolution);
-          gl_FragColor = texture2D(uTexture, uv);
-        }
-      `,
-      uniforms: {
-        uTexture: { value: texture },
-        uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
-        uImageResolution: { value: new THREE.Vector2(1280, 720) },
-      },
-      depthWrite: false,
-      depthTest: false,
-    });
-
-    const displayScene = new THREE.Scene();
-    displayScene.add(new THREE.Mesh(quadGeo, displayMat));
-
-    webglStateRef.current = { renderer, scene: displayScene, camera: orthoCam, material: displayMat, texture };
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) return;
+    ctx2dRef.current = ctx;
 
     const handleResize = () => {
-      const width = window.innerWidth;
-      const height = window.innerHeight;
-      renderer.setSize(width, height);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      displayMat.uniforms.uResolution.value.set(width, height);
-      renderer.render(displayScene, orthoCam);
-    };
-
-    window.addEventListener('resize', handleResize);
-
-    // ─── WebGL Context Loss Recovery ─────────────────────────────────
-    // With several always-mounted WebGL scenes elsewhere on the page (Hero,
-    // CreativeTransitionSection, the spine carousel) holding GPU memory for
-    // their full lifetime — pausing their render loop when off-screen frees
-    // no GPU memory — total GPU usage keeps climbing as the user scrolls, and
-    // can peak by the time they reach this section. Under that pressure the
-    // browser can forcibly evict ("lose") a WebGL context to reclaim memory.
-    // Without handling it, this canvas would stay corrupted/blank forever
-    // after that point. `preventDefault()` on the loss event is required for
-    // the browser to attempt restoration at all.
-    const handleContextLost = (event: Event) => {
-      event.preventDefault();
-      console.warn('CanvasScrollSequence: WebGL context lost — will recover on restore.');
-    };
-    const handleContextRestored = () => {
-      console.warn('CanvasScrollSequence: WebGL context restored — re-uploading current frame.');
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
       const img = imagesRef.current[currentFrameRef.current];
-      if (img && img.complete && img.naturalWidth > 0) {
-        texture.image = img;
-        texture.needsUpdate = true;
-        displayMat.uniforms.uImageResolution.value.set(img.naturalWidth, img.naturalHeight);
-      }
-      renderer.render(displayScene, orthoCam);
+      if (img) drawCover(ctx, img, canvas.width, canvas.height);
     };
-    canvas.addEventListener('webglcontextlost', handleContextLost, false);
-    canvas.addEventListener('webglcontextrestored', handleContextRestored, false);
+    handleResize();
+    window.addEventListener('resize', handleResize);
 
     return () => {
       window.removeEventListener('resize', handleResize);
-      canvas.removeEventListener('webglcontextlost', handleContextLost);
-      canvas.removeEventListener('webglcontextrestored', handleContextRestored);
-      quadGeo.dispose();
-      displayMat.dispose();
-      texture.dispose();
-      renderer.dispose();
-      webglStateRef.current = null;
+      ctx2dRef.current = null;
     };
   }, []);
 
-  // Update WebGL frame texture (with nearest-frame fallback & on-demand trigger)
+  // Draw the frame (with nearest-frame fallback & on-demand trigger)
   const renderFrame = useCallback((frameIndex: number) => {
     let img = imagesRef.current[frameIndex];
     if (!img || !img.complete || !img.naturalWidth || img.naturalWidth === 0) {
@@ -335,18 +271,13 @@ export default function CanvasScrollSequence({
       img = imagesRef.current[0];
     }
 
-    // Safety check: Do not attempt WebGL render if no valid image is ready yet
+    // Safety check: nothing to draw until at least one frame is ready
     if (!img || !img.complete || !img.naturalWidth || img.naturalWidth === 0) {
       return;
     }
 
-    if (webglStateRef.current) {
-      const { renderer, scene, camera, texture, material } = webglStateRef.current;
-      texture.image = img;
-      texture.needsUpdate = true;
-      material.uniforms.uImageResolution.value.set(img.naturalWidth, img.naturalHeight);
-      renderer.render(scene, camera);
-    }
+    const ctx = ctx2dRef.current;
+    if (ctx) drawCover(ctx, img, ctx.canvas.width, ctx.canvas.height);
   }, [loadSingleImage]);
 
   // Update canvas on frame change
@@ -379,7 +310,10 @@ export default function CanvasScrollSequence({
       // Re-center the background loader on wherever the user actually is,
       // every scroll tick — not just when the drawn frame changes — so a
       // fast fling immediately reprioritizes the frames now needed.
-      priorityFrameRef.current = targetFrame;
+      if (priorityFrameRef.current !== targetFrame) {
+        priorityFrameRef.current = targetFrame;
+        wakeWorkersRef.current?.();
+      }
 
       if (targetFrame !== currentFrameRef.current) {
         currentFrameRef.current = targetFrame;
@@ -595,4 +529,12 @@ export default function CanvasScrollSequence({
       </div>
     </div>
   );
+}
+
+/** Draws `img` scaled to cover a width x height canvas, centered (object-fit: cover). */
+function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, width: number, height: number) {
+  const scale = Math.max(width / img.naturalWidth, height / img.naturalHeight);
+  const w = img.naturalWidth * scale;
+  const h = img.naturalHeight * scale;
+  ctx.drawImage(img, (width - w) / 2, (height - h) / 2, w, h);
 }

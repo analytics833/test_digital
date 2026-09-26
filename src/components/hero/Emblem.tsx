@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { useGLTF, MeshTransmissionMaterial } from "@react-three/drei";
 import { useIntroTimeline } from "@/hooks/useIntroTimeline";
 import { useEmblemGlowTexture, EMBLEM_GLOW_VIDEO_PATH } from "@/hooks/useEmblemGlowTexture";
+import { getDeviceTier } from "@/lib/deviceTier";
 
 export const EMBLEM_MODEL_PATH = "/models/emblem-opt.glb";
 export { EMBLEM_GLOW_VIDEO_PATH };
@@ -24,6 +25,17 @@ const GLASS_PROPS = {
   temporalDistortion: 0.12,
   color: "#e2f2ff",
 } as const;
+
+/**
+ * Transmission re-renders the scene into an offscreen buffer every frame (twice
+ * with `backside`). Left unset, that buffer matches the full canvas size, so
+ * cap it per device tier.
+ */
+const TRANSMISSION_QUALITY = {
+  low: { samples: 3, resolution: 128, backside: false },
+  mid: { samples: 4, resolution: 512, backside: true },
+  high: { samples: 6, resolution: 1024, backside: true },
+}[getDeviceTier()];
 
 /**
  * Computes planar UV projection mapped onto the XY bounds of the geometry
@@ -78,7 +90,7 @@ export const Emblem = forwardRef<THREE.Group>(function Emblem(_props, ref) {
           <mesh geometry={geometry} castShadow receiveShadow>
             <MeshTransmissionMaterial
               {...GLASS_PROPS}
-              backside
+              {...TRANSMISSION_QUALITY}
               side={THREE.DoubleSide}
               emissive="#ffffff"
               emissiveIntensity={2.5}
@@ -150,7 +162,7 @@ export const PlaceholderEmblem = forwardRef<THREE.Group>(
         <group ref={innerRef}>
           {/* 1. Outer Glass Lens / Ring (Physically refracts the inner ambient glow) */}
           <mesh geometry={ringGeometry} rotation={[Math.PI / 2, 0, 0]} castShadow receiveShadow>
-            <MeshTransmissionMaterial {...GLASS_PROPS} backside side={THREE.DoubleSide} />
+            <MeshTransmissionMaterial {...GLASS_PROPS} {...TRANSMISSION_QUALITY} side={THREE.DoubleSide} />
           </mesh>
 
           {/* 2. Inner "a" Glyph Mesh with Emissive Cyberpunk Video Mapping */}

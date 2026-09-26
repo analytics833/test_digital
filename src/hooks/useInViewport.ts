@@ -28,3 +28,34 @@ export function useInViewport<T extends HTMLElement>(
 
   return isInViewport;
 }
+
+/**
+ * One-way latch: flips to true the first time the element comes within
+ * `rootMargin` of the viewport and stays true. Used to defer mounting heavy
+ * WebGL scenes (and their model / texture downloads) until they're needed.
+ */
+export function useHasBeenNearViewport<T extends HTMLElement>(
+  ref: RefObject<T | null>,
+  rootMargin = "100% 0px 100% 0px",
+) {
+  const [isNear, setIsNear] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || isNear) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsNear(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, rootMargin, isNear]);
+
+  return isNear;
+}

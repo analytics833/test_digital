@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
+import { useDeviceTier } from '@/lib/deviceTier';
 
 /**
  * ViewportBlur
@@ -11,6 +12,7 @@ import React, { useEffect, useRef, useState } from 'react';
 const HIDE_DELAY_MS = 700; // matches the opacity transition duration below
 
 export default function ViewportBlur() {
+  const tier = useDeviceTier();
   const [isVisible, setIsVisible] = useState(false);
   // Fully unmount the backdrop-filter layers when not visible instead of just
   // fading opacity — each layer forces the browser to sample/blur the backdrop
@@ -63,12 +65,16 @@ export default function ViewportBlur() {
   // Stacking layers of increasing blur with offset gradient masks creates a
   // smooth, organic blur gradient (exponential-like curve). Kept to 4 layers
   // (down from 7) — each is a separate backdrop-filter compositing pass.
-  const layers = [
+  // Low-tier devices keep only the dark gradient (no backdrop blur at all);
+  // mid-tier gets two blur layers instead of four.
+  const allLayers = [
     { blur: '2px', start: 0, end: 25 },
     { blur: '6px', start: 20, end: 50 },
     { blur: '16px', start: 45, end: 75 },
     { blur: '32px', start: 70, end: 100 },
   ];
+  const layers =
+    tier === 'low' ? [] : tier === 'mid' ? [allLayers[1], allLayers[3]] : allLayers;
 
   return (
     <>

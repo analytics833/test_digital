@@ -8,6 +8,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { getDeviceTier, TIER_MAX_DPR } from '@/lib/deviceTier';
 
 interface SpinalCordBackgroundProps {
   progress?: number;
@@ -158,29 +159,41 @@ export default function SpinalCordBackground({
     );
     camera.position.set(0, 0, 26.0); // Pulled back a bit further for a slightly wider, less cropped view of the spine
 
+    // Scale the full-screen cost to the device: pixel ratio (cost grows with
+    // its square), MSAA, particle count and the bloom pass.
+    const tier = getDeviceTier();
+    const pixelRatio = Math.min(window.devicePixelRatio, TIER_MAX_DPR[tier]);
+    const useBloom = tier === 'high';
+
     const renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: tier === 'high',
       alpha: true,
       powerPreference: 'high-performance',
     });
     renderer.setSize(canvas.clientWidth, canvas.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(pixelRatio);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
 
     /* ─── Post-Processing: Bloom (Refined soft specular halo) ─── */
-    const composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, camera));
-    const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(canvas.clientWidth, canvas.clientHeight),
-      0.07, // strength — subtle, elegant soft halo (reduced so fewer specular hotspots bloom into visible glow bubbles)
-      0.5,  // radius
-      0.93, // threshold — only the very brightest highlights bloom now
-    );
-    composer.addPass(bloomPass);
-    const outputPass = new OutputPass();
-    composer.addPass(outputPass);
+    // Only allocated on high-tier devices; elsewhere the scene renders directly.
+    let composer: EffectComposer | null = null;
+    let bloomPass: UnrealBloomPass | null = null;
+    let outputPass: OutputPass | null = null;
+    if (useBloom) {
+      composer = new EffectComposer(renderer);
+      composer.addPass(new RenderPass(scene, camera));
+      bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(canvas.clientWidth, canvas.clientHeight),
+        0.07, // strength — subtle, elegant soft halo (reduced so fewer specular hotspots bloom into visible glow bubbles)
+        0.5,  // radius
+        0.93, // threshold — only the very brightest highlights bloom now
+      );
+      composer.addPass(bloomPass);
+      outputPass = new OutputPass();
+      composer.addPass(outputPass);
+    }
 
     /* ─── Curated Lighting Rig: Multi-Shade Purple & Lavender (Soft Balanced Intensity) ─── */
     // Subtle nocturnal amethyst ambient foundation
@@ -461,7 +474,7 @@ export default function SpinalCordBackground({
     );
 
     /* ─── Generate Dense Volumetric Floral / Nebula Particle Clusters (Sticky to Spine) ─── */
-    const TOTAL_PARTICLES = 50000; // further reduced density per client feedback
+    const TOTAL_PARTICLES = { low: 12000, mid: 25000, high: 50000 }[tier];
     const NUM_COLONIES = 14;
 
     /* ─── Volumetric Sticky Particle Cluster Colonies (Toggled by enableParticles) ─── */
@@ -635,7 +648,7 @@ export default function SpinalCordBackground({
       clusterMaterial = new THREE.ShaderMaterial({
         uniforms: {
           uTime: { value: 0.0 },
-          uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
+          uPixelRatio: { value: pixelRatio },
           uMouseWorld: { value: new THREE.Vector3(999, 999, 0) },
           uMouseActive: { value: 0.0 },
           uPulseEnergy: { value: 0.0 },
@@ -684,9 +697,9 @@ export default function SpinalCordBackground({
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
-      composer.setSize(w, h);
+      composer?.setSize(w, h);
       if (clusterMaterial) {
-        clusterMaterial.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio, 2);
+        clusterMaterial.uniforms.uPixelRatio.value = pixelRatio;
       }
     }
     window.addEventListener('resize', onResize);
@@ -793,7 +806,8 @@ export default function SpinalCordBackground({
       camera.position.y += (targetY + Math.cos(time * 0.1) * 0.25 - camera.position.y) * 0.16;
       camera.lookAt(0, camera.position.y, 0);
 
-      composer.render();
+      if (composer) composer.render();
+      else renderer.render(scene, camera);
     }
 
     animate();
@@ -805,9 +819,9 @@ export default function SpinalCordBackground({
       window.removeEventListener('resize', onResize);
       window.removeEventListener('scroll', onScrollVel);
       window.removeEventListener('mousemove', onPointerMove);
-      bloomPass.dispose();
-      outputPass.dispose();
-      composer.dispose();
+      bloomPass?.dispose();
+      outputPass?.dispose();
+      composer?.dispose();
       renderer.dispose();
       vertebraMaterial.dispose();
       if (clusterGeometry) clusterGeometry.dispose();

@@ -41,15 +41,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           as="fetch"
           crossOrigin="anonymous"
         />
-        {/* Prefetch (not preload) — this model is only needed once the user scrolls
-            deep into the spine carousel section, so it shouldn't compete with the
-            emblem GLB and initial JS for bandwidth on first paint. */}
-        <link
-          rel="prefetch"
-          href="/models/spinenw-opt.glb"
-          as="fetch"
-          crossOrigin="anonymous"
-        />
       </head>
       <body className="min-h-full flex flex-col bg-black text-white selection:bg-teal-500 selection:text-white">
         <PageTransitionProvider />
