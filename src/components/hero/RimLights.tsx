@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef } from "react";
 import * as THREE from "three";
 import { RectAreaLightUniformsLib } from "three/examples/jsm/lights/RectAreaLightUniformsLib.js";
 import { Environment } from "@react-three/drei";
+import { ReadyMarker } from "@/components/stage/readiness";
 
 /**
  * Curated Multi-Shade Purple & Lavender Lighting Rig on the Hero Emblem:
@@ -27,6 +28,7 @@ export function RimLights() {
     <>
       <Suspense fallback={null}>
         <Environment files="/hdri/studio_small_03_512.hdr" environmentIntensity={0.65} />
+        <ReadyMarker part="hero-env" />
       </Suspense>
       <ambientLight intensity={0.12} color="#181028" />
 

@@ -4,13 +4,15 @@ import { useEffect, useRef, type RefObject } from "react";
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import { gsap } from "@/lib/gsap";
+import { onSiteReady } from "@/lib/siteReady";
 
 const IDLE_FLOAT_SPEED = 0.8;
 const IDLE_FLOAT_AMPLITUDE = 0.08;
 
 /**
  * Page-load intro:
- * - Runs as soon as the emblem 3D mesh is mounted and ready.
+ * - Runs once the site is revealed (the preloader hides), holding the
+ *   pre-intro pose while the stage loads and warms up behind it.
  * - Starts zoomed in close (scale 2.5) with a slight tilt.
  * - Zooms out to normal size (scale 1.0) and levels the rotation over 2.0s.
  * - Hands off to a gentle idle shimmer once the intro settles.
@@ -29,21 +31,25 @@ export function useIntroTimeline(emblemGroupRef: RefObject<THREE.Group | null>) 
     emblem.rotation.x = 0.25;
     emblem.rotation.y = Math.PI;
 
-    const tl = gsap.timeline({ defaults: { duration: 2.0, ease: "power3.out" } });
+    let tl: gsap.core.Timeline | null = null;
+    const stopWaiting = onSiteReady(() => {
+      tl = gsap.timeline({ defaults: { duration: 2.0, ease: "power3.out" } });
 
-    tl.to(emblem.scale, { x: 1, y: 1, z: 1 }, 0);
-    tl.to(emblem.rotation, { x: 0, y: Math.PI * 2 }, 0);
+      tl.to(emblem.scale, { x: 1, y: 1, z: 1 }, 0);
+      tl.to(emblem.rotation, { x: 0, y: Math.PI * 2 }, 0);
 
-    // Notify particle system that emblem zoom-out is complete, and hand off to idle float
-    tl.call(() => {
-      introComplete.current = true;
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("emblem-intro-complete"));
-      }
+      // Notify particle system that emblem zoom-out is complete, and hand off to idle float
+      tl.call(() => {
+        introComplete.current = true;
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("emblem-intro-complete"));
+        }
+      });
     });
 
     return () => {
-      tl.kill();
+      stopWaiting();
+      tl?.kill();
     };
   }, [emblemGroupRef]);
 

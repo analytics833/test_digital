@@ -6,6 +6,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { GPUComputationRenderer, type Variable } from "three/examples/jsm/misc/GPUComputationRenderer.js";
 import type { ScrollState } from "@/hooks/useScrollTimeline";
 import { getDeviceTier } from "@/lib/deviceTier";
+import { useLayer } from "@/components/stage/layerContext";
 
 // Reduced from 96 (9216 particles) — a denser field read as busy/cluttered
 // rather than premium; this keeps the effect present without overwhelming
@@ -280,6 +281,7 @@ type ParticleFieldProps = {
  */
 export function ParticleField({ scrollState, attractorPosition }: ParticleFieldProps) {
   const { gl, camera } = useThree();
+  const { activeRef } = useLayer();
   const pointerWorld = useRef(new THREE.Vector3(999, 999, 0));
   const lastPointerMoveAt = useRef(-Infinity);
   const raycaster = useMemo(() => new THREE.Raycaster(), []);
@@ -370,6 +372,9 @@ export function ParticleField({ scrollState, attractorPosition }: ParticleFieldP
   }, [gpu, geometry, material]);
 
   useFrame((_state, delta) => {
+    // The shared stage runs one loop for every layer; skip the GPU simulation
+    // while the hero is off screen.
+    if (!activeRef.current) return;
     const uniforms = gpu.positionVariable.material.uniforms;
     uniforms.uTime.value += delta;
     (uniforms.uMouse.value as THREE.Vector3).copy(pointerWorld.current);

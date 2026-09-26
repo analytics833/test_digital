@@ -1,16 +1,15 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useRef, type RefObject } from "react";
+import { Suspense, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { useFrame } from "@react-three/fiber";
 import { Text, MeshTransmissionMaterial, Environment, useGLTF } from "@react-three/drei";
-import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import { RectAreaLightUniformsLib } from "three/examples/jsm/lights/RectAreaLightUniformsLib.js";
-import { gsap } from "@/lib/gsap";
-import { useTabVisible } from "@/hooks/useTabVisible";
-import { useInViewport } from "@/hooks/useInViewport";
 import { useEmblemGlowTexture } from "@/hooks/useEmblemGlowTexture";
-import { getDeviceTier, TIER_MAX_DPR } from "@/lib/deviceTier";
+import { getDeviceTier } from "@/lib/deviceTier";
+import { useLayer } from "@/components/stage/layerContext";
+import { ReadyMarker } from "@/components/stage/readiness";
+import { stageSlots } from "@/components/stage/stageSlots";
 import { ModelErrorBoundary } from "./ModelErrorBoundary";
 
 // Transmission (glass) re-renders the scene into an offscreen buffer every
@@ -140,6 +139,9 @@ export const EMBLEM_MODEL_PATH = "/models/emblem-opt.glb";
  */
 function GLBBigEmblem({ glowTex }: { glowTex: THREE.Texture | null }) {
   const { scene } = useGLTF(EMBLEM_MODEL_PATH, "/draco/");
+  // Invisible while the layer is off screen, which also skips the glass
+  // material's extra transmission passes.
+  const { active } = useLayer();
 
   const geometry = useMemo(() => {
     let geo: THREE.BufferGeometry | null = null;
@@ -156,9 +158,13 @@ function GLBBigEmblem({ glowTex }: { glowTex: THREE.Texture | null }) {
   if (!geometry) return null;
 
   return (
-    <mesh geometry={geometry} castShadow={false} receiveShadow={false}>
+    // frustumCulled={false}: the emblem starts above the frame (it swoops in on
+    // scroll), and a culled mesh never gets drawn during the stage's warm-up
+    // frames, so its render-target shader variants would only compile on entry.
+    <mesh geometry={geometry} castShadow={false} receiveShadow={false} frustumCulled={false}>
       <MeshTransmissionMaterial
         {...TRANSMISSION_QUALITY}
+        visible={active}
         thickness={0.52}
         roughness={0.04}
         transmission={1.0}
@@ -289,9 +295,20 @@ function BigEmblem({
 
   return (
     <group ref={groupRef} position={[0, 7.2, 0]} scale={1.30} rotation={[0.5, Math.PI * 2 - 0.78, 0.04]}>
-      <ModelErrorBoundary fallback={<ProceduralBigEmblem glowTex={glowTex} />}>
-        <Suspense fallback={<ProceduralBigEmblem glowTex={glowTex} />}>
+      <ModelErrorBoundary
+        fallback={
+          <>
+            <ProceduralBigEmblem glowTex={glowTex} />
+            <ReadyMarker part="creative-emblem" />
+          </>
+        }
+      >
+        {/* No placeholder while the GLB resolves: it's already cached by the
+            hero, and the procedural stand-in would compile two extra glass
+            shaders just to be thrown away. */}
+        <Suspense fallback={null}>
           <GLBBigEmblem glowTex={glowTex} />
+          <ReadyMarker part="creative-emblem" />
         </Suspense>
       </ModelErrorBoundary>
     </group>
@@ -299,48 +316,14 @@ function BigEmblem({
 }
 
 /**
- * 3D Scene containing Luminous Headline, Big Emblem, Lights, and Streak
+ * The creative section's 3D scene (headline, big emblem, lights, environment),
+ * drawn as a layer of the shared stage canvas. Scroll progress and pointer
+ * position come from the section via stageSlots.creative.
  */
-function Scene({
-  triggerRef,
-  mousePos,
-  scrollProgress,
-}: {
-  triggerRef: React.RefObject<HTMLElement | null>;
-  mousePos: React.RefObject<{ x: number; y: number }>;
-  scrollProgress: React.RefObject<number>;
-}) {
-  const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
-
+export function CreativeWorld() {
   useEffect(() => {
     RectAreaLightUniformsLib.init();
   }, []);
-
-  // Smooth scroll camera scrub
-  useEffect(() => {
-    if (!triggerRef.current) return;
-    const progress = { value: 0 };
-
-    const tween = gsap.to(progress, {
-      value: 1,
-      ease: "none",
-      scrollTrigger: {
-        trigger: triggerRef.current,
-        start: "top bottom",
-        end: "bottom top",
-        scrub: 1.0,
-      },
-      onUpdate: () => {
-        const p = progress.value;
-        scrollProgress.current = p;
-      },
-    });
-
-    return () => {
-      tween.scrollTrigger?.kill();
-      tween.kill();
-    };
-  }, [camera, triggerRef, scrollProgress]);
 
   return (
     <>
@@ -365,70 +348,34 @@ function Scene({
       <pointLight position={[0, 1.0, -3.5]} intensity={2.2} color="#9333EA" distance={12} />
 
       {/* ─── 3D Clean Text (Left-aligned, passing directly behind the glass ring, vertically centered) ─── */}
-      <Text
-        font="/fonts/roboto-400.woff"
-        position={[-2.65, 0.0, -0.45]}
-        fontSize={0.30}
-        maxWidth={3.0}
-        lineHeight={1.08}
-        letterSpacing={0.04}
-        anchorX="left"
-        anchorY="middle"
-        textAlign="left"
-      >
-        {"CREATIVE\nDIGITAL\nEXPERIENCES"}
-        <meshBasicMaterial color="#e4e4e7" toneMapped={true} />
-      </Text>
+      {/* Own boundary: the font loads/lays out separately from the emblem */}
+      <Suspense fallback={null}>
+        <Text
+          font="/fonts/roboto-400.woff"
+          position={[-2.65, 0.0, -0.45]}
+          fontSize={0.30}
+          maxWidth={3.0}
+          lineHeight={1.08}
+          letterSpacing={0.04}
+          anchorX="left"
+          anchorY="middle"
+          textAlign="left"
+        >
+          {"CREATIVE\nDIGITAL\nEXPERIENCES"}
+          <meshBasicMaterial color="#e4e4e7" toneMapped={true} />
+        </Text>
+        <ReadyMarker part="creative-text" />
+      </Suspense>
 
       {/* ─── Big 3D Emblem with 360-degree top entrance transition ─── */}
-      <BigEmblem mousePos={mousePos} scrollProgress={scrollProgress} />
+      <BigEmblem mousePos={stageSlots.creative.mouse} scrollProgress={stageSlots.creative.progress} />
 
-      <Environment files="/hdri/studio_small_03_512.hdr" environmentIntensity={0.7} />
-    </>
-  );
-}
-
-/**
- * The section's WebGL canvas. Loaded via next/dynamic from
- * CreativeTransitionSection only once the section nears the viewport, so
- * three.js / drei / postprocessing stay out of the initial page bundle.
- */
-export default function CreativeTransitionScene({
-  sectionRef,
-  mousePos,
-  scrollProgress,
-}: {
-  sectionRef: RefObject<HTMLElement | null>;
-  mousePos: RefObject<{ x: number; y: number }>;
-  scrollProgress: RefObject<number>;
-}) {
-  const isTabVisible = useTabVisible();
-  const isInViewport = useInViewport(sectionRef);
-
-  return (
-    <Canvas
-      camera={{ position: [0, 0, 4.4], fov: 38 }}
-      dpr={[1, TIER_MAX_DPR[tier]]}
-      gl={{ antialias: false, powerPreference: "high-performance" }}
-      frameloop={isTabVisible && isInViewport ? "always" : "never"}
-    >
+      {/* Own boundary: the emblem renders (lit by the scene lights) while the
+          HDR environment is still loading */}
       <Suspense fallback={null}>
-        <Scene
-          triggerRef={sectionRef}
-          mousePos={mousePos}
-          scrollProgress={scrollProgress}
-        />
+        <Environment files="/hdri/studio_small_03_512.hdr" environmentIntensity={0.7} />
+        <ReadyMarker part="creative-env" />
       </Suspense>
-      {tier !== "low" && (
-        <EffectComposer multisampling={0}>
-          <Bloom
-            intensity={0.4}
-            luminanceThreshold={0.98}
-            luminanceSmoothing={0.2}
-            mipmapBlur
-          />
-        </EffectComposer>
-      )}
-    </Canvas>
+    </>
   );
 }

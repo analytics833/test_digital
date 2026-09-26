@@ -6,6 +6,7 @@ import { useGLTF, MeshTransmissionMaterial } from "@react-three/drei";
 import { useIntroTimeline } from "@/hooks/useIntroTimeline";
 import { useEmblemGlowTexture, EMBLEM_GLOW_VIDEO_PATH } from "@/hooks/useEmblemGlowTexture";
 import { getDeviceTier } from "@/lib/deviceTier";
+import { useLayer } from "@/components/stage/layerContext";
 
 export const EMBLEM_MODEL_PATH = "/models/emblem-opt.glb";
 export { EMBLEM_GLOW_VIDEO_PATH };
@@ -68,6 +69,9 @@ export const Emblem = forwardRef<THREE.Group>(function Emblem(_props, ref) {
   const innerRef = useRef<THREE.Group>(null);
   const { scene } = useGLTF(EMBLEM_MODEL_PATH, "/draco/");
   const bokehTexture = useEmblemGlowTexture();
+  // Invisible while its stage layer is off screen, which also makes the glass
+  // material skip its extra transmission render passes.
+  const { active } = useLayer();
 
   useIntroTimeline(innerRef);
 
@@ -91,6 +95,7 @@ export const Emblem = forwardRef<THREE.Group>(function Emblem(_props, ref) {
             <MeshTransmissionMaterial
               {...GLASS_PROPS}
               {...TRANSMISSION_QUALITY}
+              visible={active}
               side={THREE.DoubleSide}
               emissive="#ffffff"
               emissiveIntensity={2.5}

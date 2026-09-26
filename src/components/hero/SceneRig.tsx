@@ -8,6 +8,7 @@ import { ModelErrorBoundary } from "./ModelErrorBoundary";
 import { ParticleField } from "./ParticleField";
 import { RimLights } from "./RimLights";
 import { useScrollTimeline, type ScrollState } from "@/hooks/useScrollTimeline";
+import { ReadyMarker } from "@/components/stage/readiness";
 
 type SceneRigProps = {
   triggerRef: RefObject<HTMLElement | null>;
@@ -47,9 +48,17 @@ export function SceneRig({ triggerRef }: SceneRigProps) {
     <>
       <group ref={rigGroupRef} scale={RIG_SCALE} position={[0, RIG_Y_OFFSET, 0]}>
         <RimLights />
-        <ModelErrorBoundary fallback={<PlaceholderEmblem />}>
+        <ModelErrorBoundary
+          fallback={
+            <>
+              <PlaceholderEmblem />
+              <ReadyMarker part="hero-emblem" />
+            </>
+          }
+        >
           <Suspense fallback={null}>
             <Emblem />
+            <ReadyMarker part="hero-emblem" />
           </Suspense>
         </ModelErrorBoundary>
       </group>

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import dynamic from 'next/dynamic';
 import Navbar from '@/components/Navbar';
 import StartupJourneyCarousel from '@/components/StartupJourneyCarousel';
 import CanvasScrollSequence from '@/components/CanvasScrollSequence';
@@ -15,6 +16,10 @@ import ActionModal from '@/components/ActionModal';
 import Footer from '@/components/Footer';
 import SlantedSectionTransition from '@/components/SlantedSectionTransition';
 import ViewportBlur from '@/components/ViewportBlur';
+import Preloader from '@/components/Preloader';
+
+// One WebGL canvas for all 3D sections (hero, creative transition, spine).
+const SharedStage = dynamic(() => import('@/components/stage/SharedStage'), { ssr: false });
 
 export default function Home() {
   const [isActionModalOpen, setIsActionModalOpen] = useState(false);
@@ -29,6 +34,12 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-black text-white font-sans selection:bg-purple-600 selection:text-white relative">
+      {/* Loading screen: covers the page until the 3D stage has loaded and warmed up */}
+      <Preloader />
+
+      {/* Shared 3D canvas, fixed behind the sections' transparent stages */}
+      <SharedStage />
+
       {/* Floating Navigation Bar */}
       <Navbar onOpenAction={handleOpenAction} />
 
@@ -37,7 +48,7 @@ export default function Home() {
       <SkipIntroButton targetId="hero-gateway-section" />
 
       {/* ─── 1. 3D EMBLEM HERO (our own build — first thing shown) ─── */}
-      <div className="relative z-20 w-full bg-black">
+      <div className="relative z-20 w-full">
         <Hero />
       </div>
 
