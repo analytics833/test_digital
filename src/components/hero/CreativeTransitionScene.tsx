@@ -23,6 +23,36 @@ const TRANSMISSION_QUALITY = {
 }[tier];
 
 /**
+ * Compiles the scene's shaders and renders one frame as soon as the content
+ * inside its Suspense boundary is ready — while the section is still off
+ * screen (the canvas runs on "demand" there). Without this, shader compilation,
+ * texture uploads and the transmission buffer setup all happened on the first
+ * visible frame, so the emblem appeared late.
+ */
+function WarmUp({ trigger }: { trigger?: unknown }) {
+  const gl = useThree((state) => state.gl);
+  const scene = useThree((state) => state.scene);
+  const camera = useThree((state) => state.camera);
+  const invalidate = useThree((state) => state.invalidate);
+
+  useEffect(() => {
+    let cancelled = false;
+    gl.compileAsync(scene, camera)
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) invalidate();
+      });
+    return () => {
+      cancelled = true;
+    };
+    // `trigger`: re-run when something that changes the shader variant arrives
+    // later (e.g. the glow texture becoming the emissive map).
+  }, [gl, scene, camera, invalidate, trigger]);
+
+  return null;
+}
+
+/**
  * Computes planar UV projection mapped onto the XY bounds of the geometry
  * so the glow texture displays seamlessly without stretching.
  */
@@ -156,7 +186,10 @@ function GLBBigEmblem({ glowTex }: { glowTex: THREE.Texture | null }) {
   if (!geometry) return null;
 
   return (
-    <mesh geometry={geometry} castShadow={false} receiveShadow={false}>
+    // frustumCulled={false}: the emblem starts above the frame (it swoops in on
+    // scroll), and a culled mesh never gets drawn during the off-screen WarmUp
+    // frame, so its render-target shader variants would only compile on entry.
+    <mesh geometry={geometry} castShadow={false} receiveShadow={false} frustumCulled={false}>
       <MeshTransmissionMaterial
         {...TRANSMISSION_QUALITY}
         thickness={0.52}
@@ -290,8 +323,12 @@ function BigEmblem({
   return (
     <group ref={groupRef} position={[0, 7.2, 0]} scale={1.30} rotation={[0.5, Math.PI * 2 - 0.78, 0.04]}>
       <ModelErrorBoundary fallback={<ProceduralBigEmblem glowTex={glowTex} />}>
-        <Suspense fallback={<ProceduralBigEmblem glowTex={glowTex} />}>
+        {/* No placeholder while the GLB resolves: it's already cached by the
+            hero, and the procedural stand-in would compile two extra glass
+            shaders just to be thrown away. */}
+        <Suspense fallback={null}>
           <GLBBigEmblem glowTex={glowTex} />
+          <WarmUp trigger={glowTex} />
         </Suspense>
       </ModelErrorBoundary>
     </group>
@@ -365,25 +402,34 @@ function Scene({
       <pointLight position={[0, 1.0, -3.5]} intensity={2.2} color="#9333EA" distance={12} />
 
       {/* ─── 3D Clean Text (Left-aligned, passing directly behind the glass ring, vertically centered) ─── */}
-      <Text
-        font="/fonts/roboto-400.woff"
-        position={[-2.65, 0.0, -0.45]}
-        fontSize={0.30}
-        maxWidth={3.0}
-        lineHeight={1.08}
-        letterSpacing={0.04}
-        anchorX="left"
-        anchorY="middle"
-        textAlign="left"
-      >
-        {"CREATIVE\nDIGITAL\nEXPERIENCES"}
-        <meshBasicMaterial color="#e4e4e7" toneMapped={true} />
-      </Text>
+      {/* Own boundary: the font loads/lays out separately from the emblem */}
+      <Suspense fallback={null}>
+        <Text
+          font="/fonts/roboto-400.woff"
+          position={[-2.65, 0.0, -0.45]}
+          fontSize={0.30}
+          maxWidth={3.0}
+          lineHeight={1.08}
+          letterSpacing={0.04}
+          anchorX="left"
+          anchorY="middle"
+          textAlign="left"
+        >
+          {"CREATIVE\nDIGITAL\nEXPERIENCES"}
+          <meshBasicMaterial color="#e4e4e7" toneMapped={true} />
+        </Text>
+        <WarmUp />
+      </Suspense>
 
       {/* ─── Big 3D Emblem with 360-degree top entrance transition ─── */}
       <BigEmblem mousePos={mousePos} scrollProgress={scrollProgress} />
 
-      <Environment files="/hdri/studio_small_03_512.hdr" environmentIntensity={0.7} />
+      {/* Own boundary: the emblem renders (lit by the scene lights) while the
+          HDR environment is still loading */}
+      <Suspense fallback={null}>
+        <Environment files="/hdri/studio_small_03_512.hdr" environmentIntensity={0.7} />
+        <WarmUp />
+      </Suspense>
     </>
   );
 }
@@ -410,7 +456,7 @@ export default function CreativeTransitionScene({
       camera={{ position: [0, 0, 4.4], fov: 38 }}
       dpr={[1, TIER_MAX_DPR[tier]]}
       gl={{ antialias: false, powerPreference: "high-performance" }}
-      frameloop={isTabVisible && isInViewport ? "always" : "never"}
+      frameloop={isTabVisible && isInViewport ? "always" : "demand"}
     >
       <Suspense fallback={null}>
         <Scene

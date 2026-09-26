@@ -10,7 +10,11 @@ export default function CreativeTransitionSection() {
   const sectionRef = useRef<HTMLElement>(null);
   const mousePos = useRef({ x: 0, y: 0 });
   const scrollProgress = useRef(0);
-  const shouldMountScene = useHasBeenNearViewport(sectionRef);
+  // Mount (and warm up) the scene well before the section scrolls in — once it
+  // is within one screen, i.e. while the user is still scrolling through the
+  // 300vh hero. It renders on demand until visible, so the early mount costs a
+  // one-time setup, not a running render loop, and stays out of the hero intro.
+  const shouldMountScene = useHasBeenNearViewport(sectionRef, "100% 0px 100% 0px");
 
   const handleMouseMove = (e: React.MouseEvent<HTMLElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
