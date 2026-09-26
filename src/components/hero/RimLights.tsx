@@ -26,7 +26,7 @@ export function RimLights() {
   return (
     <>
       <Suspense fallback={null}>
-        <Environment preset="studio" environmentIntensity={0.65} />
+        <Environment files="/hdri/studio_small_03_1k.hdr" environmentIntensity={0.65} />
       </Suspense>
       <ambientLight intensity={0.12} color="#181028" />
 

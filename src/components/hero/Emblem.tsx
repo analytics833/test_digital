@@ -54,7 +54,7 @@ function applyPlanarUVs(geometry: THREE.BufferGeometry) {
 /** Loads the real emblem.glb and renders with emissive ambient glow texture mapping. */
 export const Emblem = forwardRef<THREE.Group>(function Emblem(_props, ref) {
   const innerRef = useRef<THREE.Group>(null);
-  const { scene } = useGLTF(EMBLEM_MODEL_PATH);
+  const { scene } = useGLTF(EMBLEM_MODEL_PATH, "/draco/");
   const bokehTexture = useEmblemGlowTexture();
 
   useIntroTimeline(innerRef);
@@ -92,7 +92,7 @@ export const Emblem = forwardRef<THREE.Group>(function Emblem(_props, ref) {
   );
 });
 
-useGLTF.preload(EMBLEM_MODEL_PATH);
+useGLTF.preload(EMBLEM_MODEL_PATH, "/draco/");
 
 /**
  * Procedural stand-in for emblem.glb: an outer transmissive ring plus an extruded "a"

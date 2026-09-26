@@ -131,7 +131,7 @@ export const EMBLEM_MODEL_PATH = "/models/emblem-opt.glb";
  * Big Emblem loaded directly from the real emblem.glb 3D asset
  */
 function GLBBigEmblem({ glowTex }: { glowTex: THREE.Texture | null }) {
-  const { scene } = useGLTF(EMBLEM_MODEL_PATH);
+  const { scene } = useGLTF(EMBLEM_MODEL_PATH, "/draco/");
 
   const geometry = useMemo(() => {
     let geo: THREE.BufferGeometry | null = null;
@@ -173,7 +173,7 @@ function GLBBigEmblem({ glowTex }: { glowTex: THREE.Texture | null }) {
   );
 }
 
-useGLTF.preload(EMBLEM_MODEL_PATH);
+useGLTF.preload(EMBLEM_MODEL_PATH, "/draco/");
 
 /**
  * Procedural Fallback Emblem if the GLB is loading or missing
@@ -360,6 +360,7 @@ function Scene({
 
       {/* ─── 3D Clean Text (Left-aligned, passing directly behind the glass ring, vertically centered) ─── */}
       <Text
+        font="/fonts/roboto-400.woff"
         position={[-2.65, 0.0, -0.45]}
         fontSize={0.30}
         maxWidth={3.0}
@@ -376,7 +377,7 @@ function Scene({
       {/* ─── Big 3D Emblem with 360-degree top entrance transition ─── */}
       <BigEmblem mousePos={mousePos} scrollProgress={scrollProgress} />
 
-      <Environment preset="studio" environmentIntensity={0.7} />
+      <Environment files="/hdri/studio_small_03_1k.hdr" environmentIntensity={0.7} />
     </>
   );
 }
