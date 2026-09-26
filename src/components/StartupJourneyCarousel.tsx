@@ -2,6 +2,8 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { useHasBeenNearViewport } from '@/hooks/useInViewport';
+import { useDeviceTier } from '@/lib/deviceTier';
 
 const SpinalCordBackground = dynamic(() => import('./SpinalCordBackground'), { ssr: false });
 
@@ -10,6 +12,10 @@ const SpinalCordBackground = dynamic(() => import('./SpinalCordBackground'), { s
 /* ─── High-Performance Responsive Card Video Loop ─── */
 function CardVideo({ src, isActive }: { src: string; isActive: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Don't download a card's video until it first becomes active (or adjacent to
+  // the active card); after that keep the source so scrolling back is instant.
+  const [hasActivated, setHasActivated] = useState(isActive);
+  if (isActive && !hasActivated) setHasActivated(true);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -35,17 +41,16 @@ function CardVideo({ src, isActive }: { src: string; isActive: boolean }) {
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [isActive]);
+  }, [isActive, hasActivated]);
 
   return (
     <video
       ref={videoRef}
-      src={src}
-      autoPlay
+      src={hasActivated ? src : undefined}
       loop
       muted
       playsInline
-      preload="metadata"
+      preload="none"
       style={{
         position: 'absolute',
         inset: 0,
@@ -83,11 +88,17 @@ export default function StartupJourneyCarousel() {
   const targetCurtainRef = useRef(0);
   const curtainSmoothRef = useRef(0);
   const [activeIndex, setActiveIndex] = useState(0);
+  // Defer the spine WebGL scene (and its model download) and the card videos
+  // until the carousel approaches the viewport.
+  const isNear = useHasBeenNearViewport(sectionRef);
+  const tier = useDeviceTier();
 
   useEffect(() => {
     let smooth = 0;
     let lastSnapped = -1;
     let rafId = 0;
+    let isOnScreen = false;
+    const lastShadow: string[] = [];
 
     /* ── Read scroll position ── */
     const computeScrollTargets = () => {
@@ -190,7 +201,11 @@ export default function StartupJourneyCarousel() {
           : baseShadow;
 
         card.style.opacity = String(opa);
-        card.style.boxShadow = activeShadow;
+        // Only touch box-shadow when it changes — rewriting it forces a repaint.
+        if (lastShadow[i] !== activeShadow) {
+          lastShadow[i] = activeShadow;
+          card.style.boxShadow = activeShadow;
+        }
         card.style.transform =
           `translateX(-50%) translateY(calc(-50% + ${yOffset}px)) rotateY(${i * ANGLE_STEP}deg) translateZ(${RADIUS}px) scale(${scale})`;
       });
@@ -201,15 +216,34 @@ export default function StartupJourneyCarousel() {
         setActiveIndex(snapped);
       }
 
-      rafId = requestAnimationFrame(tick);
+      // Keep animating while on screen or still easing toward the target;
+      // otherwise go idle until the section scrolls back into view.
+      const settling =
+        Math.abs(rawRef.current - smooth) > 0.001 ||
+        Math.abs(targetCurtain - curtainSmoothRef.current) > 0.001;
+      rafId = isOnScreen || settling ? requestAnimationFrame(tick) : 0;
     };
+
+    const startTicking = () => {
+      if (!rafId) rafId = requestAnimationFrame(tick);
+    };
+
+    const visibilityObserver = new IntersectionObserver(([entry]) => {
+      isOnScreen = entry.isIntersecting;
+      if (isOnScreen) {
+        computeScrollTargets();
+        startTicking();
+      }
+    });
+    if (sectionRef.current) visibilityObserver.observe(sectionRef.current);
 
     window.addEventListener('scroll', onScroll, { passive: true });
     onScroll();
-    rafId = requestAnimationFrame(tick);
+    startTicking();
 
     return () => {
       window.removeEventListener('scroll', onScroll);
+      visibilityObserver.disconnect();
       cancelAnimationFrame(rafId);
     };
   }, []);
@@ -232,7 +266,7 @@ export default function StartupJourneyCarousel() {
 
         {/* ── WebGL Spine + vignette ── */}
         <div className="absolute inset-0 z-0 pointer-events-none">
-          <SpinalCordBackground progressRef={progressRef} />
+          {isNear && <SpinalCordBackground progressRef={progressRef} />}
           {/* Subtle dark ambient flare matching theme */}
           <div
             className="absolute inset-0 pointer-events-none opacity-30"
@@ -294,8 +328,9 @@ export default function StartupJourneyCarousel() {
                   cursor: 'pointer',
                   background: 'linear-gradient(135deg, rgba(6, 10, 18, 0.08) 0%, rgba(10, 16, 26, 0.15) 100%)',
                   border: '1.2px solid rgba(255, 255, 255, 0.22)',
-                  backdropFilter: 'blur(4px)',
-                  WebkitBackdropFilter: 'blur(4px)',
+                  // Six blurred 3D layers over a WebGL canvas is costly; skip on low-end.
+                  backdropFilter: tier === 'low' ? undefined : 'blur(4px)',
+                  WebkitBackdropFilter: tier === 'low' ? undefined : 'blur(4px)',
                   boxShadow:
                     'inset 0 1.5px 2px 0 rgba(255, 255, 255, 0.3), inset 0 -1.5px 2px 0 rgba(0, 0, 0, 0.6), 0 20px 50px -10px rgba(0, 0, 0, 0.8)',
                 }}
@@ -313,7 +348,7 @@ export default function StartupJourneyCarousel() {
                     overflow: 'hidden',
                   }}
                 >
-                  <CardVideo src={card.videoUrl} isActive={Math.abs(activeIndex - i) <= 1} />
+                  <CardVideo src={card.videoUrl} isActive={isNear && Math.abs(activeIndex - i) <= 1} />
                 </div>
 
                 {/* ── 2. Specular Diagonal Glass Reflection Sheen ── */}

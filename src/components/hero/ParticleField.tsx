@@ -5,12 +5,14 @@ import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
 import { GPUComputationRenderer, type Variable } from "three/examples/jsm/misc/GPUComputationRenderer.js";
 import type { ScrollState } from "@/hooks/useScrollTimeline";
+import { getDeviceTier } from "@/lib/deviceTier";
 
 // Reduced from 96 (9216 particles) — a denser field read as busy/cluttered
 // rather than premium; this keeps the effect present without overwhelming
 // the emblem, and is a solid GPU-compute win as a side effect (particle
 // count scales with the square of this value).
-const SIM_SIZE = 64;
+// Low-tier devices simulate a quarter of the particles (32x32).
+const SIM_SIZE = getDeviceTier() === "low" ? 32 : 64;
 const PARTICLE_COUNT = SIM_SIZE * SIM_SIZE;
 
 // Fraction of scroll progress over which particles finish revealing / spreading out

@@ -25,7 +25,15 @@ type SharedGlow = {
   particles: Particle[];
   isVideoPlaying: { current: boolean };
   refCount: number;
+  lastFrameAt: number;
+  resuming: boolean;
+  idleTimer: ReturnType<typeof setInterval> | null;
 };
+
+// Both consumers' canvases stop their frameloop when scrolled away, but the
+// <video> element would keep decoding regardless. Pause it once no canvas has
+// drawn it for this long; the next rendered frame resumes it.
+const IDLE_PAUSE_MS = 1000;
 
 let shared: SharedGlow | null = null;
 
@@ -85,7 +93,16 @@ function getOrCreateShared(videoSrc: string): SharedGlow {
     particles: createParticles(),
     isVideoPlaying: { current: false },
     refCount: 0,
+    lastFrameAt: performance.now(),
+    resuming: false,
+    idleTimer: null,
   };
+  const s = shared;
+  s.idleTimer = setInterval(() => {
+    if (!s.video.paused && performance.now() - s.lastFrameAt > IDLE_PAUSE_MS) {
+      s.video.pause();
+    }
+  }, IDLE_PAUSE_MS);
   return shared;
 }
 
@@ -138,6 +155,7 @@ export function useEmblemGlowTexture(videoSrc: string = EMBLEM_GLOW_VIDEO_PATH) 
 
       s.refCount -= 1;
       if (s.refCount <= 0) {
+        if (s.idleTimer) clearInterval(s.idleTimer);
         s.video.pause();
         s.video.removeAttribute("src");
         s.video.load();
@@ -151,6 +169,14 @@ export function useEmblemGlowTexture(videoSrc: string = EMBLEM_GLOW_VIDEO_PATH) 
   useFrame((state) => {
     const s = instanceRef.current;
     if (!s) return;
+
+    s.lastFrameAt = performance.now();
+    if (s.video.paused && !s.resuming && !document.hidden) {
+      s.resuming = true;
+      s.video.play().catch(() => {}).finally(() => {
+        s.resuming = false;
+      });
+    }
 
     if (s.isVideoPlaying.current) {
       s.videoTexture.needsUpdate = true;
