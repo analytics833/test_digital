@@ -2,9 +2,9 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
-  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -16,60 +16,79 @@ import { Canvas, createPortal, useFrame, useThree } from "@react-three/fiber";
 import { useProgress } from "@react-three/drei";
 import { BloomEffect, CopyPass, EffectComposer, EffectPass, RenderPass } from "postprocessing";
 import { getDeviceTier, TIER_MAX_DPR } from "@/lib/deviceTier";
-import { markSiteReady, setLoadProgress } from "@/lib/siteReady";
+import { markSiteReady, onSiteReady, setLoadProgress } from "@/lib/siteReady";
 import { LayerContext } from "./layerContext";
 import { markPartReady, readyPartCount, STAGE_PARTS } from "./readiness";
-import { stageSlots, useSlotsRegistered, type StageSlotId } from "./stageSlots";
+import { stageSlots, useSlotsRegistered } from "./stageSlots";
 import { createSpineWorld } from "./spineWorld";
+import { createVideoWorld } from "./videoWorld";
+import {
+  createPose,
+  dockedPose,
+  flightPose,
+  offsetPose,
+  staticPose,
+  STATIONS,
+  type Pose,
+} from "./cameraPath";
 import { SceneRig } from "@/components/hero/SceneRig";
 import { CreativeWorld } from "@/components/hero/CreativeTransitionScene";
 
 /**
- * One WebGL canvas for the whole page (instead of one per section).
+ * One WebGL canvas and one camera for the whole page's 3D world.
  *
- * Each 3D section (hero, creative transition, spine carousel) is a "layer":
- * its own THREE.Scene + camera rendered into its own render target, then
- * composited into the on-screen rect of that section's stage element, with the
- * section's clip shape (the creative section's slanted top edge, the carousel's
- * curtain reveal). Layers share the renderer, compiled shaders and uploaded
- * assets (the emblem model, glow video and HDR are processed once), and only
- * visible layers render.
+ * The world has four stations — hero emblem, creative scene, spine carousel,
+ * video screen — and scrolling flies a single camera between them (see
+ * cameraPath.ts). Each station is its own scene ("layer") so it keeps its own
+ * lights, fog and environment; every visible layer renders with the shared
+ * camera into its own render target, and the targets are composited
+ * (premultiplied alpha) into the canvas. Layers share the renderer, compiled
+ * shaders and uploaded assets, only visible layers render, and the loop idles
+ * when the world is off screen (behind the HTML sections further down).
  *
- * Before the site is revealed everything is loaded and each layer is rendered
- * a few times (compiling every shader variant) behind the preloader, so nothing
- * loads or compiles while scrolling.
+ * Before the site is revealed everything is loaded and the camera visits
+ * every station for a few frames (compiling every shader variant) behind the
+ * preloader, so nothing loads or compiles while scrolling. The gateway video
+ * itself downloads in the background after the reveal.
  */
 
 const tier = getDeviceTier();
 
-type MaskKind = "none" | "slant" | "curtain";
+type LayerId = "hero" | "creative" | "spine" | "video";
+
+/** How the compositor outputs a layer: 0 = linear -> sRGB, 1 = ACES + sRGB, 2 = passthrough. */
+type OutputMode = 0 | 1 | 2;
 
 type LayerHandle = {
-  id: StageSlotId;
+  id: LayerId;
   order: number;
-  mask: MaskKind;
-  /** 0 = none (linear -> sRGB only), 1 = ACES filmic */
-  toneMapping: 0 | 1;
+  outputMode: OutputMode;
   exposure: number;
   target: THREE.WebGLRenderTarget;
-  render: (gl: THREE.WebGLRenderer, time: number) => void;
+  /** Per-frame work before the camera pose is computed (active layers only). */
+  update?: (time: number) => void;
+  /** For stations that animate their own camera (the spine). */
+  stationCamera?: THREE.PerspectiveCamera;
+  render: (gl: THREE.WebGLRenderer, camera: THREE.PerspectiveCamera) => void;
   resize: (width: number, height: number, bufferWidth: number, bufferHeight: number) => void;
   setActive: (active: boolean) => void;
 };
 
 type Director = {
+  camera: THREE.PerspectiveCamera;
   register: (layer: LayerHandle) => () => void;
 };
 
 const DirectorContext = createContext<Director | null>(null);
 
-// Slant of the creative section's top edge: clip-path polygon(0 8.5vw, 100% 0, ...)
-const CREATIVE_SLANT_VW = 0.085;
+const LAYER_COUNT = 4;
 // Give up waiting for assets after this long and reveal anyway.
 const PRELOAD_TIMEOUT_MS = 20000;
-// Frames rendered for every layer during warm-up (compiles all shader variants,
-// including the transmission and bloom passes, and uploads all textures).
-const WARMUP_FRAMES = 3;
+// Warm-up frames: the camera cycles through the stations (twice), rendering
+// every layer each frame, so all shader variants — including the glass
+// transmission and bloom passes — compile and all textures upload.
+const WARMUP_STATIONS: LayerId[] = ["hero", "creative", "spine", "video"];
+const WARMUP_FRAMES = WARMUP_STATIONS.length * 2;
 
 const compositeVertex = /* glsl */ `
 void main() {
@@ -79,11 +98,8 @@ void main() {
 
 const compositeFragment = /* glsl */ `
 uniform sampler2D uTexture;
-uniform vec4 uRect;       // stage rect in buffer px: x, y (from top), width, height
-uniform vec2 uBuffer;     // drawing buffer size in px
-uniform float uClipTop;   // buffer px from top; nothing above this is drawn
-uniform vec3 uSlant;      // top edge y at the left / right (buffer px from top), enabled
-uniform int uToneMapping;
+uniform vec2 uBuffer;
+uniform int uOutputMode;
 uniform float uExposure;
 
 vec3 RRTAndODTFit(vec3 v) {
@@ -116,15 +132,16 @@ vec3 linearToSRGB(vec3 c) {
 }
 
 void main() {
-  vec2 p = vec2(gl_FragCoord.x, uBuffer.y - gl_FragCoord.y);
-  vec2 uv = (p - uRect.xy) / uRect.zw;
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
-  if (p.y < uClipTop) discard;
-  if (uSlant.z > 0.5 && p.y < mix(uSlant.x, uSlant.y, p.x / uBuffer.x)) discard;
-
-  vec3 color = texture2D(uTexture, vec2(uv.x, 1.0 - uv.y)).rgb * uExposure;
-  if (uToneMapping == 1) color = acesFilmic(color);
-  gl_FragColor = vec4(linearToSRGB(clamp(color, 0.0, 1.0)), 1.0);
+  vec4 texel = texture2D(uTexture, gl_FragCoord.xy / uBuffer);
+  vec3 color = texel.rgb;
+  if (uOutputMode != 2) {
+    color *= uExposure;
+    if (uOutputMode == 1) color = acesFilmic(color);
+    color = linearToSRGB(clamp(color, 0.0, 1.0));
+  }
+  // Premultiplied: solid pixels (alpha 1) cover what's below, glow in empty
+  // pixels (alpha 0, e.g. bloom) adds on top.
+  gl_FragColor = vec4(color, clamp(texel.a, 0.0, 1.0));
 }
 `;
 
@@ -135,16 +152,18 @@ function createComposite() {
     fragmentShader: compositeFragment,
     uniforms: {
       uTexture: { value: null },
-      uRect: { value: new THREE.Vector4() },
       uBuffer: { value: new THREE.Vector2() },
-      uClipTop: { value: 0 },
-      uSlant: { value: new THREE.Vector3() },
-      uToneMapping: { value: 0 },
+      uOutputMode: { value: 0 },
       uExposure: { value: 1 },
     },
     depthTest: false,
     depthWrite: false,
     toneMapped: false,
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.OneFactor,
+    blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
   });
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
   mesh.frustumCulled = false;
@@ -175,39 +194,36 @@ function useActiveState() {
 }
 
 /**
- * A layer whose content is React Three Fiber children, portalled into the
- * layer's own scene and camera (so useThree/useFrame inside see them).
+ * A station whose content is React Three Fiber children, portalled into the
+ * layer's own scene (placed at the station's world offset) with the shared
+ * camera, so useThree/useFrame inside see both.
  */
 function PortalLayer({
   id,
   order,
-  mask,
-  fov,
-  position,
+  station,
   bloom,
   children,
 }: {
-  id: StageSlotId;
+  id: LayerId;
   order: number;
-  mask: MaskKind;
-  fov: number;
-  position: [number, number, number];
+  station: THREE.Vector3;
   bloom?: { intensity: number; luminanceThreshold: number; luminanceSmoothing: number };
   children: ReactNode;
 }) {
   const gl = useThree((state) => state.gl);
   const director = useContext(DirectorContext)!;
-  const scene = useMemo(() => new THREE.Scene(), []);
-  const camera = useMemo(() => {
-    const cam = new THREE.PerspectiveCamera(fov, 1, 0.1, 100);
-    cam.position.set(...position);
-    return cam;
-    // Camera settings are fixed for the lifetime of the layer.
+  const scene = useMemo(() => {
+    const s = new THREE.Scene();
+    s.position.copy(station);
+    return s;
+    // The station offset is fixed for the lifetime of the layer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const { activeRef, active, setActive } = useActiveState();
 
   useLayoutEffect(() => {
+    const camera = director.camera;
     const target = createLayerTarget();
     let composer: EffectComposer | null = null;
     if (bloom) {
@@ -221,8 +237,7 @@ function PortalLayer({
     const unregister = director.register({
       id,
       order,
-      mask,
-      toneMapping: 0,
+      outputMode: 0,
       exposure: 1,
       target,
       render: (renderer) => {
@@ -235,8 +250,6 @@ function PortalLayer({
         }
       },
       resize: (width, height, bufferWidth, bufferHeight) => {
-        camera.aspect = width / height;
-        camera.updateProjectionMatrix();
         target.setSize(bufferWidth, bufferHeight);
         // width/height are the canvas' own CSS size, so this only resizes the
         // composer's buffers (it would resize the canvas for any other size).
@@ -257,11 +270,11 @@ function PortalLayer({
   return createPortal(
     <LayerContext.Provider value={{ activeRef, active }}>{children}</LayerContext.Provider>,
     scene,
-    { camera },
+    { camera: director.camera },
   );
 }
 
-/** The spine carousel background: a plain three.js world (see spineWorld.ts). */
+/** The spine station: a plain three.js world (see spineWorld.ts). */
 function SpineLayer({ order }: { order: number }) {
   const director = useContext(DirectorContext)!;
   const size = useThree((state) => state.size);
@@ -275,22 +288,22 @@ function SpineLayer({ order }: { order: number }) {
       height: size.height,
       onReady: () => markPartReady("spine"),
     });
+    world.scene.position.copy(STATIONS.spine);
 
     const unregister = director.register({
       id: "spine",
       order,
-      mask: "curtain",
-      toneMapping: 1,
+      outputMode: 1,
       exposure: 1.05,
       target,
-      render: (renderer, time) => {
-        world.update(time);
+      stationCamera: world.camera,
+      update: (time) => world.update(time),
+      render: (renderer, camera) => {
         renderer.setRenderTarget(target);
         renderer.clear();
-        renderer.render(world.scene, world.camera);
+        renderer.render(world.scene, camera);
       },
       resize: (width, height, bufferWidth, bufferHeight) => {
-        world.setSize(width, height);
         target.setSize(bufferWidth, bufferHeight);
       },
       setActive,
@@ -301,7 +314,57 @@ function SpineLayer({ order }: { order: number }) {
       world.dispose();
       target.dispose();
     };
-    // Built once; later size changes arrive through resize().
+    // Built once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return null;
+}
+
+/** The gateway station: the scroll-scrubbed video screen (see videoWorld.ts). */
+function VideoLayer({ order }: { order: number }) {
+  const director = useContext(DirectorContext)!;
+  const { setActive } = useActiveState();
+
+  useLayoutEffect(() => {
+    const target = createLayerTarget();
+    const world = createVideoWorld({ lowRes: tier === "low" });
+    world.scene.position.copy(STATIONS.video);
+    const stopWaiting = onSiteReady(() => world.load());
+
+    const unregister = director.register({
+      id: "video",
+      order,
+      outputMode: 2,
+      exposure: 1,
+      target,
+      update: () => {
+        world.setProgress(stageSlots.video.progress.current);
+        const card = stageSlots.video.stage.current;
+        if (card) {
+          const rect = card.getBoundingClientRect();
+          const height = Math.max(rect.height, 1);
+          world.layout(rect.width / height, stageSlots.video.radius.current / height);
+        }
+      },
+      render: (renderer, camera) => {
+        renderer.setRenderTarget(target);
+        renderer.clear();
+        renderer.render(world.scene, camera);
+      },
+      resize: (_width, _height, bufferWidth, bufferHeight) => {
+        target.setSize(bufferWidth, bufferHeight);
+      },
+      setActive,
+    });
+
+    return () => {
+      stopWaiting();
+      unregister();
+      world.dispose();
+      target.dispose();
+    };
+    // Built once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -310,6 +373,8 @@ function SpineLayer({ order }: { order: number }) {
 
 type Phase = "loading" | "warming" | "running";
 
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+
 function DirectorProvider({ children }: { children: ReactNode }) {
   const layersRef = useRef<LayerHandle[]>([]);
   const gl = useThree((state) => state.gl);
@@ -317,17 +382,22 @@ function DirectorProvider({ children }: { children: ReactNode }) {
   const phaseRef = useRef<Phase>("loading");
   const warmFramesRef = useRef(0);
   const startedAtRef = useRef(0);
-  const sizeRef = useRef({ width: 0, height: 0, bufferWidth: 0, bufferHeight: 0 });
+  const sizeRef = useRef({ width: 0, height: 0, bufferWidth: 0 });
   const drewLastFrameRef = useRef(false);
   const idleRef = useRef(false);
+  const compositeRef = useRef<ReturnType<typeof createComposite> | null>(null);
+  const posesRef = useRef({ from: createPose(), to: createPose(), out: createPose() });
+  // Layers the rig marked visible this frame; the compositor renders these.
+  const activeIdsRef = useRef(new Set<LayerId>());
   const assets = useProgress();
 
   const director = useMemo<Director>(
     () => ({
+      camera: new THREE.PerspectiveCamera(32, 1, 0.1, 400),
       register: (layer) => {
         layersRef.current = [...layersRef.current, layer].sort((a, b) => a.order - b.order);
         // Force a resize for the new layer on the next frame.
-        sizeRef.current = { width: 0, height: 0, bufferWidth: 0, bufferHeight: 0 };
+        sizeRef.current = { width: 0, height: 0, bufferWidth: 0 };
         return () => {
           layersRef.current = layersRef.current.filter((l) => l !== layer);
         };
@@ -335,8 +405,6 @@ function DirectorProvider({ children }: { children: ReactNode }) {
     }),
     [],
   );
-
-  const compositeRef = useRef<ReturnType<typeof createComposite> | null>(null);
 
   useEffect(() => {
     gl.setClearColor(0x000000, 0);
@@ -358,7 +426,7 @@ function DirectorProvider({ children }: { children: ReactNode }) {
     setLoadProgress(0.9 * (0.5 * assetShare + 0.5 * partShare));
   }, [assets.loaded, assets.total]);
 
-  // Wake the (idle) render loop whenever a stage element nears the viewport.
+  // Wake the (idle) render loop whenever a world section nears the viewport.
   useEffect(() => {
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting) && idleRef.current) {
@@ -366,100 +434,170 @@ function DirectorProvider({ children }: { children: ReactNode }) {
         setFrameloop("always");
       }
     });
-    (["hero", "creative", "spine"] as const).forEach((id) => {
-      const el = stageSlots[id].stage.current;
+    (["hero", "creative", "spine", "video"] as const).forEach((id) => {
+      const el = stageSlots[id].section.current;
       if (el) observer.observe(el);
     });
     return () => observer.disconnect();
   }, [setFrameloop]);
 
-  useFrame((state) => {
-    const gl = state.gl;
-    const composite = compositeRef.current;
-    if (!composite) return;
-    const layers = layersRef.current;
-    const dpr = gl.getPixelRatio();
-    const width = state.size.width;
-    const height = state.size.height;
-    const bufferWidth = Math.round(width * dpr);
-    const bufferHeight = Math.round(height * dpr);
-
-    // Resize layer targets / cameras when the canvas size changes.
-    const size = sizeRef.current;
-    if (size.width !== width || size.height !== height || size.bufferWidth !== bufferWidth) {
-      sizeRef.current = { width, height, bufferWidth, bufferHeight };
-      layers.forEach((layer) => layer.resize(width, height, bufferWidth, bufferHeight));
+  /** Camera pose at a station (for warm-up and flight endpoints). */
+  const stationPose = (id: LayerId, width: number, height: number, out: Pose): Pose => {
+    switch (id) {
+      case "hero":
+        return staticPose(STATIONS.hero, [0, 0.3, 8.5], 32, out);
+      case "creative":
+        return staticPose(STATIONS.creative, [0, 0, 4.4], 38, out);
+      case "spine": {
+        const cam = layersRef.current.find((l) => l.id === "spine")?.stationCamera;
+        return cam ? offsetPose(STATIONS.spine, cam, out) : staticPose(STATIONS.spine, [0, 0, 26], 45, out);
+      }
+      case "video": {
+        const card = stageSlots.video.stage.current;
+        const rect = card ? card.getBoundingClientRect() : new DOMRect(0, 0, width, height);
+        return dockedPose(rect, width, height, out);
+      }
     }
+  };
+
+  const applyPose = (pose: Pose, aspect: number) => {
+    const camera = director.camera;
+    camera.position.copy(pose.position);
+    camera.quaternion.copy(pose.quaternion);
+    if (camera.fov !== pose.fov || camera.aspect !== aspect) {
+      camera.fov = pose.fov;
+      camera.aspect = aspect;
+      camera.updateProjectionMatrix();
+    }
+  };
+
+  // ── Camera rig: runs before the stations' own frame callbacks (priority -1),
+  // so particle simulation and glass transmission passes see this frame's camera.
+  useFrame((state) => {
+    const layers = layersRef.current;
+    const { width, height } = state.size;
+    const aspect = width / height;
+    const time = state.clock.elapsedTime;
+    const poses = posesRef.current;
 
     // ── Preload state machine ──
     if (phaseRef.current === "loading") {
       const partsReady = readyPartCount() >= STAGE_PARTS.length;
       const assetsDone = !assets.active && assets.loaded >= assets.total;
       const timedOut = performance.now() - startedAtRef.current > PRELOAD_TIMEOUT_MS;
-      if ((partsReady && assetsDone && layers.length === 3) || timedOut) {
+      if ((partsReady && assetsDone && layers.length === LAYER_COUNT) || timedOut) {
         phaseRef.current = "warming";
         warmFramesRef.current = 0;
       }
     }
-    const warming = phaseRef.current === "warming";
 
-    // ── Per-layer visibility and clip ──
-    const vw = window.innerWidth;
-    type Draw = { layer: LayerHandle; rect: DOMRect; clipTop: number; slant: [number, number] | null };
-    const draws: Draw[] = [];
-    let anyStageOnScreen = false;
-    for (const layer of layers) {
-      const slot = stageSlots[layer.id];
-      const stage = slot.stage.current;
-      if (!stage) {
-        layer.setActive(false);
-        continue;
-      }
-      const rect = stage.getBoundingClientRect();
-      if (rect.bottom > 0 && rect.top < height) anyStageOnScreen = true;
-      let clipTop = rect.top;
-      let slant: [number, number] | null = null;
-
-      if (layer.mask === "curtain") {
-        const raw = stageSlots.spine.curtain.current;
-        const p = raw >= 0.998 ? 1 : raw <= 0.002 ? 0 : raw;
-        clipTop = rect.top + (1 - p) * rect.height;
-      } else if (layer.mask === "slant") {
-        const sectionTop = slot.section.current?.getBoundingClientRect().top ?? rect.top;
-        slant = [sectionTop + CREATIVE_SLANT_VW * vw, sectionTop];
-        clipTop = Math.max(clipTop, sectionTop);
-      }
-
-      const visibleTop = Math.max(clipTop, 0);
-      const visibleBottom = Math.min(rect.bottom, height);
-      const visible = visibleBottom > visibleTop && rect.right > 0 && rect.left < width;
-      layer.setActive(visible || warming);
-      if (visible || warming) draws.push({ layer, rect, clipTop, slant });
+    if (phaseRef.current === "warming") {
+      layers.forEach((layer) => {
+        layer.setActive(true);
+        layer.update?.(time);
+      });
+      const station = WARMUP_STATIONS[warmFramesRef.current % WARMUP_STATIONS.length];
+      applyPose(stationPose(station, width, height, poses.out), aspect);
+      return;
     }
 
-    // ── Render layers into their targets ──
-    const time = state.clock.elapsedTime;
-    for (const { layer } of draws) layer.render(gl, time);
+    // ── Flight progress from the sections' scroll positions ──
+    const creative = stageSlots.creative.section.current?.getBoundingClientRect();
+    const spine = stageSlots.spine.section.current?.getBoundingClientRect();
+    const video = stageSlots.video.section.current?.getBoundingClientRect();
+    if (!creative || !spine || !video) return;
 
-    // ── Composite into the canvas ──
-    gl.setRenderTarget(null);
-    const autoClear = gl.autoClear;
-    gl.autoClear = false;
-    gl.setClearColor(0x000000, 0);
-    gl.clear();
+    // hero → creative while the creative section rises into view,
+    // creative → spine over the first screen of the carousel section,
+    // spine → video while the video section rises into view.
+    const toCreative = clamp01((height - creative.top) / height);
+    const toSpine = clamp01(-spine.top / height);
+    const toVideo = clamp01((height - video.top) / height);
+
+    const active: Record<LayerId, boolean> = {
+      hero: toCreative < 1,
+      creative: toCreative > 0 && toSpine < 1,
+      spine: toSpine > 0 && toVideo < 1,
+      video: toVideo > 0 && video.bottom > 0,
+    };
+    activeIdsRef.current.clear();
+    for (const layer of layers) {
+      layer.setActive(active[layer.id]);
+      if (active[layer.id]) {
+        activeIdsRef.current.add(layer.id);
+        layer.update?.(time);
+      }
+    }
+
+    let pose: Pose;
+    if (toCreative < 1) {
+      pose = flightPose(
+        stationPose("hero", width, height, poses.from),
+        stationPose("creative", width, height, poses.to),
+        toCreative,
+        poses.out,
+      );
+    } else if (toSpine <= 0) {
+      pose = stationPose("creative", width, height, poses.out);
+    } else if (toSpine < 1) {
+      pose = flightPose(
+        stationPose("creative", width, height, poses.from),
+        stationPose("spine", width, height, poses.to),
+        toSpine,
+        poses.out,
+      );
+    } else if (toVideo <= 0) {
+      pose = stationPose("spine", width, height, poses.out);
+    } else if (toVideo < 1) {
+      pose = flightPose(
+        stationPose("spine", width, height, poses.from),
+        stationPose("video", width, height, poses.to),
+        toVideo,
+        poses.out,
+      );
+    } else {
+      pose = stationPose("video", width, height, poses.out);
+    }
+    applyPose(pose, aspect);
+  }, -1);
+
+  // ── Render active layers and composite them (priority 1: takes over rendering) ──
+  useFrame((state) => {
+    const composite = compositeRef.current;
+    if (!composite) return;
+    const renderer = state.gl;
+    const layers = layersRef.current;
+    const dpr = renderer.getPixelRatio();
+    const { width, height } = state.size;
+    const bufferWidth = Math.round(width * dpr);
+    const bufferHeight = Math.round(height * dpr);
+
+    const size = sizeRef.current;
+    if (size.width !== width || size.height !== height || size.bufferWidth !== bufferWidth) {
+      sizeRef.current = { width, height, bufferWidth };
+      layers.forEach((layer) => layer.resize(width, height, bufferWidth, bufferHeight));
+    }
+
+    const warming = phaseRef.current === "warming";
+    const drawn = layers.filter((layer) => warming || activeIdsRef.current.has(layer.id));
+    for (const layer of drawn) layer.render(renderer, director.camera);
+
+    renderer.setRenderTarget(null);
+    const autoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear();
     const u = composite.material.uniforms;
     u.uBuffer.value.set(bufferWidth, bufferHeight);
-    for (const { layer, rect, clipTop, slant } of warming ? [] : draws) {
-      u.uTexture.value = layer.target.texture;
-      u.uRect.value.set(rect.left * dpr, rect.top * dpr, rect.width * dpr, rect.height * dpr);
-      u.uClipTop.value = clipTop * dpr;
-      if (slant) u.uSlant.value.set(slant[0] * dpr, slant[1] * dpr, 1);
-      else u.uSlant.value.set(0, 0, 0);
-      u.uToneMapping.value = layer.toneMapping;
-      u.uExposure.value = layer.exposure;
-      gl.render(composite.scene, composite.camera);
+    if (!warming) {
+      for (const layer of drawn) {
+        u.uTexture.value = layer.target.texture;
+        u.uOutputMode.value = layer.outputMode;
+        u.uExposure.value = layer.exposure;
+        renderer.render(composite.scene, composite.camera);
+      }
     }
-    gl.autoClear = autoClear;
+    renderer.autoClear = autoClear;
 
     if (warming) {
       warmFramesRef.current++;
@@ -471,22 +609,20 @@ function DirectorProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // ── Idle once no stage is on screen (the observer above wakes the loop).
-    // A stage can be on screen with nothing to draw yet (the carousel before
-    // its curtain rises), so this checks the stage rects, not the draw list.
+    // ── Idle once the world is off screen (the observer above wakes the loop).
     // The frame after the last draw has already cleared the canvas.
-    if (!anyStageOnScreen && !drewLastFrameRef.current && phaseRef.current === "running") {
+    if (drawn.length === 0 && !drewLastFrameRef.current && phaseRef.current === "running") {
       idleRef.current = true;
       setFrameloop("never");
     }
-    drewLastFrameRef.current = draws.length > 0;
+    drewLastFrameRef.current = drawn.length > 0;
   }, 1);
 
   return <DirectorContext.Provider value={director}>{children}</DirectorContext.Provider>;
 }
 
 export default function SharedStage() {
-  const registered = useSlotsRegistered(["hero", "creative", "spine"]);
+  const registered = useSlotsRegistered(["hero", "creative", "spine", "video"]);
 
   return (
     <div className="fixed inset-0 z-[5] pointer-events-none" aria-hidden="true">
@@ -497,18 +633,18 @@ export default function SharedStage() {
           frameloop="always"
         >
           <DirectorProvider>
-            <PortalLayer id="hero" order={0} mask="none" fov={32} position={[0, 0.3, 8.5]}
+            <PortalLayer id="hero" order={0} station={STATIONS.hero}
               bloom={tier === "low" ? undefined : { intensity: 0.9, luminanceThreshold: 0.25, luminanceSmoothing: 0.4 }}
             >
-              <color attach="background" args={["#000000"]} />
               <SceneRig triggerRef={stageSlots.hero.section} />
             </PortalLayer>
-            <PortalLayer id="creative" order={1} mask="slant" fov={38} position={[0, 0, 4.4]}
+            <PortalLayer id="creative" order={1} station={STATIONS.creative}
               bloom={tier === "low" ? undefined : { intensity: 0.4, luminanceThreshold: 0.98, luminanceSmoothing: 0.2 }}
             >
               <CreativeWorld />
             </PortalLayer>
             <SpineLayer order={2} />
+            <VideoLayer order={3} />
           </DirectorProvider>
         </Canvas>
       )}

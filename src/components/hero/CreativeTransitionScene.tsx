@@ -327,7 +327,6 @@ export function CreativeWorld() {
 
   return (
     <>
-      <color attach="background" args={["#000000"]} />
 
       {/* ─── Curated Multi-Shade Purple & Lavender Lighting Rig on the Big Emblem ─── */}
       <ambientLight intensity={0.2} color="#181028" />

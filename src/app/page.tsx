@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import dynamic from 'next/dynamic';
 import Navbar from '@/components/Navbar';
 import StartupJourneyCarousel from '@/components/StartupJourneyCarousel';
-import CanvasScrollSequence from '@/components/CanvasScrollSequence';
+import GatewayVideoSection from '@/components/GatewayVideoSection';
 import Hero from '@/components/hero/Hero';
 import CreativeTransitionSection from '@/components/hero/CreativeTransitionSection';
 import HeroSection from '@/components/HeroSection';
@@ -14,7 +14,6 @@ import StoryOverlays from '@/components/StoryOverlays';
 import SkipIntroButton from '@/components/SkipIntroButton';
 import ActionModal from '@/components/ActionModal';
 import Footer from '@/components/Footer';
-import SlantedSectionTransition from '@/components/SlantedSectionTransition';
 import ViewportBlur from '@/components/ViewportBlur';
 import Preloader from '@/components/Preloader';
 
@@ -62,10 +61,13 @@ export default function Home() {
         <StartupJourneyCarousel />
       </div>
 
-      {/* ─── 4. MAIN HOME PAGE SECTION (Slanted Transition & Hero Gateway) ─── */}
+      {/* ─── 4. MAIN HOME PAGE SECTION (Hero Gateway over the scroll-scrubbed video) ─── */}
       <div id="main-content" className="scroll-mt-10">
-        <SlantedSectionTransition slantSlopeVw={6}>
-          <CanvasScrollSequence frameCount={600} containerHeight="h-[620vh]" onOpenAction={handleOpenAction}>
+        {/* clip-path: inset(0) confines the section's fixed card frame to the section box
+            (painting and pointer hit-testing). The background stays transparent so the
+            shared 3D world (the camera flying down to the video screen) shows through. */}
+        <div className="relative z-30 w-full -mt-[6vw]" style={{ clipPath: 'inset(0)', paddingTop: '6.6vw' }}>
+          <GatewayVideoSection containerHeight="h-[620vh]" onOpenAction={handleOpenAction}>
             {() => (
               <div className="relative z-10 w-full flex flex-col items-center justify-center space-y-28 sm:space-y-40 pt-4 pb-64 sm:pb-96 pointer-events-auto mx-auto">
                 <HeroSection onOpenAction={handleOpenAction} />
@@ -73,8 +75,8 @@ export default function Home() {
                 <FourPillarsSection />
               </div>
             )}
-          </CanvasScrollSequence>
-        </SlantedSectionTransition>
+          </GatewayVideoSection>
+        </div>
       </div>
 
       {/* ─── 5. SOLID BLACK BACKGROUND SECTIONS (Proof of Growth & Final CTA) ─── */}

@@ -7,9 +7,9 @@ import { stageSlots, useStageSlot } from "@/components/stage/stageSlots";
 export default function CreativeTransitionSection() {
   const sectionRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  // The 3D scene is drawn by the shared stage canvas (components/stage) into
-  // this section's pinned stage; the section only supplies scroll progress and
-  // pointer position.
+  // The 3D scene is a station of the shared stage world (components/stage);
+  // this section's scroll position drives the camera flight to it, and it
+  // supplies the scene's scroll progress and pointer position.
   useStageSlot("creative", stageRef, sectionRef);
 
   useEffect(() => {
@@ -47,13 +47,9 @@ export default function CreativeTransitionSection() {
       ref={sectionRef}
       onMouseMove={handleMouseMove}
       className="relative z-[25] w-full min-h-[220vh] select-none -mt-[8.5vw] overflow-visible"
-      style={{
-        clipPath: "polygon(0 8.5vw, 100% 0, 100% 100%, 0 100%)",
-        WebkitClipPath: "polygon(0 8.5vw, 100% 0, 100% 100%, 0 100%)",
-      }}
     >
-      {/* ─── Pinned 100vh Full Viewport Stage (transparent: the shared stage
-          canvas behind the page draws the 3D scene here, with the same slant) ─── */}
+      {/* ─── Pinned 100vh Full Viewport Stage (transparent: the shared camera
+          flies down to the creative station while this section rises) ─── */}
       <div ref={stageRef} className="sticky top-0 h-screen w-full overflow-hidden flex items-center justify-center">
         {/* ─── Right-Side Information Column (Vertically Centered) ─── */}
         <div className="absolute inset-0 z-10 flex items-center justify-end pointer-events-none">

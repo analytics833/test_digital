@@ -110,7 +110,7 @@ export default function StartupJourneyCarousel() {
       if (scrollable <= 0) return;
 
       const scrolled = Math.max(0, -rect.top);
-      // Dedicated scroll distance for the slanted curtain reveal
+      // Dedicated scroll distance for the camera to arrive (cards fade in)
       const revealDist = windowH * 1.0;
       const cardScrollable = Math.max(1, scrollable - revealDist);
 
@@ -150,29 +150,19 @@ export default function StartupJourneyCarousel() {
       progressRef.current = smooth;
       const snapped = Math.round(smooth);
 
-      // 2. Smoothly interpolate slanted curtain reveal progress
+      // 2. Smoothly interpolate the arrival progress (the first screen of this
+      // section, while the shared camera flies down to the spine station)
       const targetCurtain = targetCurtainRef.current;
       curtainSmoothRef.current += (targetCurtain - curtainSmoothRef.current) * 0.15;
       const p = Math.max(0, Math.min(1, curtainSmoothRef.current));
-      // The shared canvas clips the spine scene with the same curtain.
-      stageSlots.spine.curtain.current = p;
 
-      // 3. Update dynamic straight horizontal clip path on the sticky stage
+      // 3. Fade the HTML layer (cards, vignette) in as the camera arrives
       if (stageRef.current) {
         const style = stageRef.current.style;
-        if (p >= 0.998) {
-          style.clipPath = 'none';
-          style.setProperty('-webkit-clip-path', 'none');
-        } else if (p <= 0.002) {
-          const val = 'inset(100% 0 0 0)';
-          style.clipPath = val;
-          style.setProperty('-webkit-clip-path', val);
-        } else {
-          const curtainY = ((1 - p) * 100).toFixed(3);
-          const clipStr = `inset(${curtainY}% 0 0 0)`;
-          style.clipPath = clipStr;
-          style.setProperty('-webkit-clip-path', clipStr);
-        }
+        const opacity = p >= 0.998 ? '1' : p <= 0.002 ? '0' : p.toFixed(3);
+        if (style.opacity !== opacity) style.opacity = opacity;
+        const pointerEvents = p > 0.5 ? 'auto' : 'none';
+        if (style.pointerEvents !== pointerEvents) style.pointerEvents = pointerEvents;
       }
 
       /* Rotate the overall carousel container around Y-axis */
@@ -190,7 +180,7 @@ export default function StartupJourneyCarousel() {
         const scale = Math.max(0.5, 1 - dist * 0.22);
         let opa = Math.max(0.08, 1 - dist * 0.42);
 
-        // While curtain is revealing, subtly fade in card 0
+        // While the camera is arriving, subtly fade in card 0
         if (i === 0 && p < 1) {
           opa *= Math.max(0.1, p);
         }
@@ -255,14 +245,13 @@ export default function StartupJourneyCarousel() {
       ref={sectionRef}
       className="relative z-30 w-full h-[900vh] -mt-[100vh] overflow-visible bg-transparent pointer-events-none"
     >
-      {/* ── Sticky full-screen 100vh stage (Masked with straight horizontal curtain reveal) ── */}
+      {/* ── Sticky full-screen 100vh stage (fades in as the shared camera arrives at the spine) ── */}
       <div
         ref={stageRef}
         className="sticky top-0 w-full h-screen flex flex-col overflow-hidden pointer-events-auto"
         style={{
-          clipPath: 'inset(100% 0 0 0)',
-          WebkitClipPath: 'inset(100% 0 0 0)',
-          willChange: 'clip-path',
+          opacity: 0,
+          willChange: 'opacity',
         }}
       >
 

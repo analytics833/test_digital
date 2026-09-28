@@ -4,9 +4,9 @@ import { useRef } from "react";
 import { useStageSlot } from "@/components/stage/stageSlots";
 
 /**
- * The 3D emblem hero. Its scene is drawn by the shared stage canvas
- * (components/stage/SharedStage) into this section's pinned stage, which is
- * left transparent; this component only provides the scroll range.
+ * The 3D emblem hero: the first station of the shared stage world
+ * (components/stage/SharedStage), seen through this section's transparent
+ * pinned stage. This component only provides the scroll range.
  */
 export default function Hero() {
   const sectionRef = useRef<HTMLElement>(null);

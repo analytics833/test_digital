@@ -3,12 +3,11 @@
 import { useLayoutEffect, useSyncExternalStore, type RefObject } from "react";
 
 /**
- * Links the page's DOM sections to the scenes drawn by the shared stage
- * canvas. Each section registers its full-viewport "stage" element (where its
- * scene is composited) and its section element (scroll trigger / clip shape),
- * and shares the live values its scene reads (scroll progress, pointer,
- * curtain reveal). Values are plain mutable refs so per-frame updates never
- * cause React renders.
+ * Links the page's DOM sections to the 3D world drawn by the shared stage
+ * canvas. Each section registers its section element (whose scroll position
+ * drives the camera flight) and its stage element, and shares the live values
+ * its station reads (scroll progress, pointer, video card geometry). Values
+ * are plain mutable refs so per-frame updates never cause React renders.
  */
 type ElementRef = { current: HTMLElement | null };
 
@@ -30,8 +29,15 @@ export const stageSlots = {
     section: { current: null } as ElementRef,
     /** Smoothed carousel position (float card index). */
     progress: { current: 0 },
-    /** Curtain reveal of the stage from the bottom, in [0, 1]. */
-    curtain: { current: 0 },
+  },
+  video: {
+    /** The (scaling, rounded) card box the video screen is docked to. */
+    stage: { current: null } as ElementRef,
+    section: { current: null } as ElementRef,
+    /** Playback position in [0, 1] (scroll-scrubbed). */
+    progress: { current: 0 },
+    /** Rendered corner radius of the card, in CSS px. */
+    radius: { current: 0 },
   },
 };
 
