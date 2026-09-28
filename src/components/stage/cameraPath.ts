@@ -15,9 +15,9 @@ import { SCREEN_HEIGHT } from "./videoWorld";
  */
 export const STATIONS = {
   hero: new THREE.Vector3(0, 0, 0),
-  creative: new THREE.Vector3(0, -16, 0),
+  creative: new THREE.Vector3(0, -13, 0),
   spine: new THREE.Vector3(0, -44, 0),
-  video: new THREE.Vector3(0, -95, 0),
+  video: new THREE.Vector3(0, -86, 0),
 } as const;
 
 export type Pose = { position: THREE.Vector3; quaternion: THREE.Quaternion; fov: number };
@@ -63,7 +63,9 @@ export function dockedPose(rect: DOMRect, viewportWidth: number, viewportHeight:
   return out;
 }
 
-const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+// Quintic: the camera lingers near each station and crosses the empty space
+// between them quickly, so the stretch with nothing in frame is short.
+const easeInOutQuint = (t: number) => (t < 0.5 ? 16 * t ** 5 : 1 - Math.pow(-2 * t + 2, 5) / 2);
 
 const MAX_DIVE_PITCH = 0.32; // radians, at the middle of a flight
 const pitch = new THREE.Quaternion();
@@ -71,7 +73,7 @@ const xAxis = new THREE.Vector3(1, 0, 0);
 
 /** Camera pose `t` of the way (0..1, by scroll) through the flight from `from` to `to`. */
 export function flightPose(from: Pose, to: Pose, t: number, out: Pose) {
-  const e = easeInOutCubic(THREE.MathUtils.clamp(t, 0, 1));
+  const e = easeInOutQuint(THREE.MathUtils.clamp(t, 0, 1));
   out.position.lerpVectors(from.position, to.position, e);
   out.quaternion.slerpQuaternions(from.quaternion, to.quaternion, e);
   pitch.setFromAxisAngle(xAxis, -Math.sin(Math.PI * e) * MAX_DIVE_PITCH);

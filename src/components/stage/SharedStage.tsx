@@ -49,7 +49,7 @@ import { CreativeWorld } from "@/components/hero/CreativeTransitionScene";
  * Before the site is revealed everything is loaded and the camera visits
  * every station for a few frames (compiling every shader variant) behind the
  * preloader, so nothing loads or compiles while scrolling. The gateway video
- * itself downloads in the background after the reveal.
+ * itself downloads in the background once the visitor reaches the carousel.
  */
 
 const tier = getDeviceTier();
@@ -74,8 +74,8 @@ type LayerHandle = {
   setActive: (active: boolean) => void;
 };
 
+/** The shared flying camera is the canvas' own (R3F root) camera. */
 type Director = {
-  camera: THREE.PerspectiveCamera;
   register: (layer: LayerHandle) => () => void;
 };
 
@@ -212,6 +212,7 @@ function PortalLayer({
   children: ReactNode;
 }) {
   const gl = useThree((state) => state.gl);
+  const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
   const director = useContext(DirectorContext)!;
   const scene = useMemo(() => {
     const s = new THREE.Scene();
@@ -223,7 +224,6 @@ function PortalLayer({
   const { activeRef, active, setActive } = useActiveState();
 
   useLayoutEffect(() => {
-    const camera = director.camera;
     const target = createLayerTarget();
     let composer: EffectComposer | null = null;
     if (bloom) {
@@ -240,13 +240,13 @@ function PortalLayer({
       outputMode: 0,
       exposure: 1,
       target,
-      render: (renderer) => {
+      render: (renderer, cam) => {
         if (composer) {
           composer.render();
         } else {
           renderer.setRenderTarget(target);
           renderer.clear();
-          renderer.render(scene, camera);
+          renderer.render(scene, cam);
         }
       },
       resize: (width, height, bufferWidth, bufferHeight) => {
@@ -270,7 +270,7 @@ function PortalLayer({
   return createPortal(
     <LayerContext.Provider value={{ activeRef, active }}>{children}</LayerContext.Provider>,
     scene,
-    { camera: director.camera },
+    { camera },
   );
 }
 
@@ -330,7 +330,23 @@ function VideoLayer({ order }: { order: number }) {
     const target = createLayerTarget();
     const world = createVideoWorld({ lowRes: tier === "low" });
     world.scene.position.copy(STATIONS.video);
-    const stopWaiting = onSiteReady(() => world.load());
+    // Download the video once the visitor reaches the spine carousel (after the
+    // reveal): its ~900vh of scroll leaves plenty of time, and visitors who
+    // never get that far don't pay for it.
+    let observer: IntersectionObserver | null = null;
+    const stopWaiting = onSiteReady(() => {
+      const spineSection = stageSlots.spine.section.current;
+      if (!spineSection) {
+        world.load();
+        return;
+      }
+      observer = new IntersectionObserver(([entry]) => {
+        if (!entry.isIntersecting) return;
+        observer?.disconnect();
+        world.load();
+      });
+      observer.observe(spineSection);
+    });
 
     const unregister = director.register({
       id: "video",
@@ -360,6 +376,7 @@ function VideoLayer({ order }: { order: number }) {
 
     return () => {
       stopWaiting();
+      observer?.disconnect();
       unregister();
       world.dispose();
       target.dispose();
@@ -393,7 +410,6 @@ function DirectorProvider({ children }: { children: ReactNode }) {
 
   const director = useMemo<Director>(
     () => ({
-      camera: new THREE.PerspectiveCamera(32, 1, 0.1, 400),
       register: (layer) => {
         layersRef.current = [...layersRef.current, layer].sort((a, b) => a.order - b.order);
         // Force a resize for the new layer on the next frame.
@@ -460,8 +476,7 @@ function DirectorProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const applyPose = (pose: Pose, aspect: number) => {
-    const camera = director.camera;
+  const applyPose = (camera: THREE.PerspectiveCamera, pose: Pose, aspect: number) => {
     camera.position.copy(pose.position);
     camera.quaternion.copy(pose.quaternion);
     if (camera.fov !== pose.fov || camera.aspect !== aspect) {
@@ -479,6 +494,7 @@ function DirectorProvider({ children }: { children: ReactNode }) {
     const aspect = width / height;
     const time = state.clock.elapsedTime;
     const poses = posesRef.current;
+    const camera = state.camera as THREE.PerspectiveCamera;
 
     // ── Preload state machine ──
     if (phaseRef.current === "loading") {
@@ -497,7 +513,7 @@ function DirectorProvider({ children }: { children: ReactNode }) {
         layer.update?.(time);
       });
       const station = WARMUP_STATIONS[warmFramesRef.current % WARMUP_STATIONS.length];
-      applyPose(stationPose(station, width, height, poses.out), aspect);
+      applyPose(camera, stationPose(station, width, height, poses.out), aspect);
       return;
     }
 
@@ -558,7 +574,7 @@ function DirectorProvider({ children }: { children: ReactNode }) {
     } else {
       pose = stationPose("video", width, height, poses.out);
     }
-    applyPose(pose, aspect);
+    applyPose(camera, pose, aspect);
   }, -1);
 
   // ── Render active layers and composite them (priority 1: takes over rendering) ──
@@ -580,7 +596,7 @@ function DirectorProvider({ children }: { children: ReactNode }) {
 
     const warming = phaseRef.current === "warming";
     const drawn = layers.filter((layer) => warming || activeIdsRef.current.has(layer.id));
-    for (const layer of drawn) layer.render(renderer, director.camera);
+    for (const layer of drawn) layer.render(renderer, state.camera as THREE.PerspectiveCamera);
 
     renderer.setRenderTarget(null);
     const autoClear = renderer.autoClear;
@@ -630,6 +646,7 @@ export default function SharedStage() {
         <Canvas
           dpr={[1, TIER_MAX_DPR[tier]]}
           gl={{ antialias: false, alpha: true, powerPreference: "high-performance" }}
+          camera={{ fov: 32, near: 0.1, far: 400, position: [0, 0.3, 8.5] }}
           frameloop="always"
         >
           <DirectorProvider>

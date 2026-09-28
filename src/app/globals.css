@@ -46,3 +46,18 @@ html.lenis body {
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+/* Preloader failsafe: if the page's JavaScript never runs (a script failed to
+   load), nothing would ever hide the server-rendered loading screen. This
+   fades it out after 30s regardless; normally JS removes it long before. */
+@keyframes preloader-failsafe {
+  to {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
+.preloader-failsafe {
+  animation: preloader-failsafe 0.7s ease-out 30s forwards;
+}

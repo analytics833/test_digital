@@ -69,7 +69,7 @@ export default function Preloader() {
 
   return (
     <div
-      className="fixed inset-0 z-[10000] flex flex-col items-center justify-center bg-black text-white transition-opacity ease-out"
+      className="preloader-failsafe fixed inset-0 z-[10000] flex flex-col items-center justify-center bg-black text-white transition-opacity ease-out"
       style={{ opacity: isDone ? 0 : 1, transitionDuration: `${FADE_MS}ms`, pointerEvents: isDone ? 'none' : 'auto' }}
       role="progressbar"
       aria-label="Loading"

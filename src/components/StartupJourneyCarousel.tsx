@@ -426,15 +426,6 @@ export default function StartupJourneyCarousel() {
           ))}
         </div>
       </div>
-
-      {/* ── Seamless Slanted Black Dissolve Gradient Overlay (Bottom of Section — Appears only at end of scroll) ── */}
-      <div
-        className="absolute bottom-0 inset-x-0 h-[40vh] sm:h-[65vh] pointer-events-none z-30"
-        style={{
-          background: `linear-gradient(${Math.atan2(6, 100) * (180 / Math.PI)}deg, #000000 0%, transparent 100%)`,
-        }}
-        aria-hidden="true"
-      />
     </section>
   );
 }
